@@ -1,0 +1,7 @@
+opencv-contrib-python
+numpy
+lxml
+Pillow
+imagehash
+scikit-image
+
