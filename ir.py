@@ -2,13 +2,30 @@
 
 """ ir.py  -  Generate report from image """
 
+from concurrent.futures import ProcessPoolExecutor
+
 import argparse
-from collections import namedtuple
+import asyncio
+from dataclasses import dataclass
 import logging
 from pathlib import Path
 import platform
 import sys
+from typing import (
+    List,
+    Dict,
+    Tuple,
+    Optional,
+    Union,
+    Any,
+    Callable,
+    TypeVar,
+    Set,
+    Iterable,
+    cast,
+)
 
+import aiofiles
 import numpy as np
 import cv2
 from lxml import etree
@@ -19,13 +36,38 @@ from skimage.feature import hog as skimage_hog
 
 
 PROG = Path(__file__).stem
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
 
 
-def parse_args(args):
+# utils.py
+supported_image_formats = [
+    "avif",
+    "bmp",
+    "exr",
+    "gif",
+    "hdr",
+    "jpeg",
+    "jpg",
+    "png",
+    "webp",
+    "pbm",
+    "pfm",
+    "pgm",
+    "pic",
+    "pnm",
+    "ppm",
+    "pxm",
+    "ras",
+    "sr",
+    "tif",
+    "tiff",
+]
+
+
+def parse_args(args: List[str]) -> argparse.Namespace:
     """Parse command-line arguments"""
 
     argp = argparse.ArgumentParser(
@@ -36,7 +78,7 @@ def parse_args(args):
     )
 
     argp.add_argument(
-        "image_path",
+        "input_path",
         type=Path,
         help="Path to input file",
     )
@@ -63,8 +105,11 @@ def parse_args(args):
 
 
 def init(
-    params=None, log_file=None, stream_level=logging.DEBUG, file_level=logging.DEBUG
-):
+    params: Optional[argparse.Namespace] = None,
+    log_file: Optional[Union[str, Path]] = None,
+    stream_level: int = logging.DEBUG,
+    file_level: int = logging.DEBUG,
+) -> None:
     """initialize logs"""
 
     for handler in logger.handlers:
@@ -97,10 +142,9 @@ def init(
         logger.debug("  %s", log_handle)
 
 
-def non_max_suppression(boxes, overlap_thresh):
+def non_max_suppression(boxes: np.ndarray, overlap_thresh: float) -> np.ndarray:
     """
-    Optimized version of the non max suppression algorithm.
-    Condenses extraneous boxes based on overlap_thresh
+    Condense extraneous bounding boxes based on overlap_thresh
     """
     boxes = np.array(boxes)
     if len(boxes) == 0:
@@ -141,8 +185,8 @@ def non_max_suppression(boxes, overlap_thresh):
     return boxes[pick].astype("int")
 
 
-def boxes_from_image(img, overlap_thresh=0):
-    """Use MSER to get bounding boxes for all contiguous pixel areas in image_path"""
+def boxes_from_image(img: np.ndarray, overlap_thresh: float = 0) -> np.ndarray:
+    """Use MSER to get bounding boxes for all contiguous pixel areas in img"""
 
     boxes = []
 
@@ -167,7 +211,7 @@ def boxes_from_image(img, overlap_thresh=0):
     return boxes[np.lexsort(boxes.T[::-1])]
 
 
-def spectral_analysis(img):
+def spectral_analysis(img: np.ndarray) -> Dict[str, List[int]]:
     """Use image data to segment page into lines and columns"""
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -188,102 +232,21 @@ def spectral_analysis(img):
     return counts
 
 
-def feature_to_hash(descriptors):
-    # Quantize the descriptors and convert to hexadecimal
+def feature_to_hash(descriptors: np.ndarray) -> str:
+    """Quantize descriptors and convert to a hexadecimal digest"""
     descriptors = descriptors.flatten()
-    descriptors = (descriptors / 255.0 * 15).astype(int)  # Quantize to 4-bit values
-    hash_value = "".join(
-        [format(v, "x") for v in descriptors[:32]]
-    )  # Taking the first 32 values
+    descriptors = (descriptors / 255.0 * 15).astype(int)
+    hash_value = "".join([format(v, "x") for v in descriptors[:32]])
+
     return hash_value
 
 
-def dhash(image):
-    # image = Image.fromarray(image)
-    return str(imagehash.dhash(image))
-
-
-def wavelet_hash(image):
-    # image = Image.fromarray(image)
-    return str(imagehash.whash(image))
-
-
-def histogram_hash(image):
-    histogram = cv2.calcHist(
-        [image], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256]
-    )
-    histogram = cv2.normalize(histogram, histogram).flatten()
-    return "".join([format(int(v * 255), "02x") for v in histogram])
-
-
-def gabor_hash(image):
-    gabor_filter = cv2.getGaborKernel(
-        (5, 5), 1.0, np.pi / 4, 10.0, 0.5, 0, ktype=cv2.CV_32F
-    )
-    gabor_image = cv2.filter2D(image, cv2.CV_8UC3, gabor_filter)
-    hash_value = "".join(
-        [format(int(v), "02x") for v in gabor_image.flatten()[:32]]
-    )  # Taking the first 32 values
-    return hash_value
-
-
-def sift_hash(image):
-    sift = cv2.SIFT_create()
-    _, descriptors = sift.detectAndCompute(image, None)
-    return feature_to_hash(descriptors)
-
-
-def surf_hash(image):
-    surf = cv2.xfeatures2d.SURF_create()
-    _, descriptors = surf.detectAndCompute(image, None)
-    return feature_to_hash(descriptors)
-
-
-def orb_hash(image):
-    orb = cv2.ORB_create()
-    _, descriptors = orb.detectAndCompute(image, None)
-    return feature_to_hash(descriptors)
-
-
-def tamura_hash(image):
-    coarseness = np.mean(cv2.absdiff(image[:-1, :], image[1:, :])) + np.mean(
-        cv2.absdiff(image[:, :-1], image[:, 1:])
-    )
-    contrast = np.std(image)
-    hash_value = format(int(coarseness), "04x") + format(int(contrast), "04x")
-    return hash_value
-
-
-def fuzzy_hash(image):
-    quantized_image = (image // 32).astype(np.uint8)
-    hash_value = "".join(
-        [format(v, "02x") for v in quantized_image.flatten()[:32]]
-    )  # Taking the first 32 values
-    return hash_value
-
-
-def geometric_hash(image):
-    edges = cv2.Canny(image, 100, 200)
-    hash_value = "".join(
-        [format(v, "02x") for v in edges.flatten()[:32]]
-    )  # Taking the first 32 values
-    return hash_value
-
-
-def fourier_hash(image):
-    f_transform = np.fft.fft2(image)
-    f_transform_shifted = np.fft.fftshift(f_transform)
-    magnitude_spectrum = np.log(np.abs(f_transform_shifted))
-    magnitude_spectrum = (magnitude_spectrum / magnitude_spectrum.max() * 255).astype(
-        np.uint8
-    )
-    hash_value = "".join(
-        [format(v, "02x") for v in magnitude_spectrum.flatten()[:32]]
-    )  # Taking the first 32 values
-    return hash_value
-
-
-def create_element(parent, tag, text=None, attrib=None):
+def create_element(
+    parent: etree.Element,
+    tag: str,
+    text: Optional[str] = None,
+    attrib: Optional[Dict[str, str]] = None,
+) -> etree.SubElement:
     """Helper function to create an XML element"""
 
     if attrib is None:
@@ -296,7 +259,9 @@ def create_element(parent, tag, text=None, attrib=None):
     return elem
 
 
-def create_hash_element(parent, hash_type, image):
+def create_hash_element(
+    parent: etree.Element, hash_type: str, image: np.ndarray
+) -> None:
     """Function to create hash elements"""
 
     if hash_type in cv2_hash_functions:
@@ -310,6 +275,82 @@ def create_hash_element(parent, hash_type, image):
         hash_sub_elem.text = hash_type(image)
 
 
+# stomach.py
+def dhash(image: Image.Image) -> str:
+    return str(imagehash.dhash(image))
+
+
+def wavelet_hash(image: Image.Image) -> str:
+    return str(imagehash.whash(image))
+
+
+def histogram_hash(image: np.ndarray) -> str:
+    histogram = cv2.calcHist(
+        [image], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256]
+    )
+    histogram = cv2.normalize(histogram, histogram).flatten()
+    return "".join([format(int(v * 255), "02x") for v in histogram])
+
+
+def gabor_hash(image: np.ndarray) -> str:
+    gabor_filter = cv2.getGaborKernel(
+        (5, 5), 1.0, np.pi / 4, 10.0, 0.5, 0, ktype=cv2.CV_32F
+    )
+    gabor_image = cv2.filter2D(image, cv2.CV_8UC3, gabor_filter)
+    hash_value = "".join([format(int(v), "02x") for v in gabor_image.flatten()[:32]])
+    return hash_value
+
+
+def sift_hash(image: np.ndarray) -> str:
+    sift = cv2.SIFT_create()
+    _, descriptors = sift.detectAndCompute(image, None)
+    return feature_to_hash(descriptors)
+
+
+def surf_hash(image: np.ndarray) -> str:
+    surf = cv2.xfeatures2d.SURF_create()
+    _, descriptors = surf.detectAndCompute(image, None)
+    return feature_to_hash(descriptors)
+
+
+def orb_hash(image: np.ndarray) -> str:
+    orb = cv2.ORB_create()
+    _, descriptors = orb.detectAndCompute(image, None)
+    return feature_to_hash(descriptors)
+
+
+def tamura_hash(image: np.ndarray) -> str:
+    coarseness = np.mean(cv2.absdiff(image[:-1, :], image[1:, :])) + np.mean(
+        cv2.absdiff(image[:, :-1], image[:, 1:])
+    )
+    contrast = np.std(image)
+    hash_value = format(int(coarseness), "04x") + format(int(contrast), "04x")
+    return hash_value
+
+
+def fuzzy_hash(image: np.ndarray) -> str:
+    quantized_image = (image // 32).astype(np.uint8)
+    hash_value = "".join([format(v, "02x") for v in quantized_image.flatten()[:32]])
+    return hash_value
+
+
+def geometric_hash(image: np.ndarray) -> str:
+    edges = cv2.Canny(image, 100, 200)
+    hash_value = "".join([format(v, "02x") for v in edges.flatten()[:32]])
+    return hash_value
+
+
+def fourier_hash(image: np.ndarray) -> str:
+    f_transform = np.fft.fft2(image)
+    f_transform_shifted = np.fft.fftshift(f_transform)
+    magnitude_spectrum = np.log(np.abs(f_transform_shifted))
+    magnitude_spectrum = (magnitude_spectrum / magnitude_spectrum.max() * 255).astype(
+        np.uint8
+    )
+    hash_value = "".join([format(v, "02x") for v in magnitude_spectrum.flatten()[:32]])
+    return hash_value
+
+
 cv2_hash_functions = {
     "Average": cv2.img_hash.AverageHash_create(),
     "BlockMean": cv2.img_hash.BlockMeanHash_create(),
@@ -318,6 +359,7 @@ cv2_hash_functions = {
     "P": cv2.img_hash.PHash_create(),
     "RadialVariance": cv2.img_hash.RadialVarianceHash_create(),
 }
+
 
 hash_functions = {
     "dhash": dhash,
@@ -333,7 +375,25 @@ hash_functions = {
     "fourier": fourier_hash,
 }
 
-Size = namedtuple("Size", ["width", "height"])
+
+# papersize.py
+@dataclass
+class Size:
+    width: float
+    height: float
+
+    def area(self) -> float:
+        """Calculate area of the size"""
+        return self.width * self.height
+
+    def aspect_ratio(self) -> float:
+        """Calculate aspect ratio"""
+        return self.width / self.height
+
+    def scale(self, factor: float) -> "Size":
+        """Return a new Size scaled by factor"""
+        return Size(self.width * factor, self.height * factor)
+
 
 standard_sizes = {
     # ISO A Series
@@ -352,10 +412,10 @@ standard_sizes = {
     "B4": Size(250, 353),
     "B5": Size(176, 250),
     # U.S. Sizes (converted to millimeters)
-    "Letter": Size(8.5 * 25.4, 11 * 25.4),
-    "Legal": Size(8.5 * 25.4, 14 * 25.4),
-    "Tabloid": Size(11 * 25.4, 17 * 25.4),
-    "Ledger": Size(17 * 25.4, 11 * 25.4),
+    "letter": Size(8.5 * 25.4, 11 * 25.4),
+    "legal": Size(8.5 * 25.4, 14 * 25.4),
+    "labloid": Size(11 * 25.4, 17 * 25.4),
+    "ledger": Size(17 * 25.4, 11 * 25.4),
     # Japanese JIS B Sizes
     "JIS B0": Size(1030, 1456),
     "JIS B1": Size(728, 1030),
@@ -366,7 +426,7 @@ standard_sizes = {
 }
 
 
-def guess_paper_size(img, dpi=600, top_n=3):
+def guess_paper_size(img: np.ndarray, dpi: int = 600) -> Dict[str, float]:
     image_width_mm = (img.shape[1] / dpi) * 25.4
     image_height_mm = (img.shape[0] / dpi) * 25.4
 
@@ -381,7 +441,9 @@ def guess_paper_size(img, dpi=600, top_n=3):
     return differences
 
 
-def guess_dpi(paper_type, pixel_width, pixel_height):
+def guess_dpi(
+    paper_type: str, pixel_width: float, pixel_height: float
+) -> Tuple[float, float]:
     if paper_type not in standard_sizes:
         raise ValueError(f"Unknown paper type: {paper_type}")
 
@@ -396,24 +458,10 @@ def guess_dpi(paper_type, pixel_width, pixel_height):
     return dpi_width, dpi_height
 
 
-def main(args):
-    """script entry-point"""
-
-    params = parse_args(args)
-    init(params, log_file=params.image_path.with_suffix(".ir"))
-
-    # in
-    try:
-        img = cv2.imread(str(params.image_path))
-    except Exception as exc:
-        logger.critical(exc, exc_info=True)
-        raise exc
-    if img is None:
-        logger.critical("Failed to read image '%s'", params.image_path.resolve())
-        raise IOError(f"Failed to read image '{params.image_path.resolve()}'")
-
+# ir.py
+def gen_xml(input_path: Path, img: np.ndarray) -> etree.Element:
     gimg = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    pimg = Image.open(params.image_path)
+    pimg = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
     # <report>
     root = etree.Element("report")
@@ -476,7 +524,7 @@ def main(args):
     )
 
     #     <path>
-    path_elem = create_element(info_elem, "path", text=str(params.image_path.resolve()))
+    path_elem = create_element(info_elem, "path", text=str(input_path))
     #   </Metadata>
 
     # Contiguous pixel area bounding boxes
@@ -502,10 +550,77 @@ def main(args):
             elem = etree.SubElement(d_elem, way[:-1], n=str(i))
             elem.text = str(count)
 
-    # out
-    etree.ElementTree(root).write(
-        str(params.out_path), encoding="UTF-8", xml_declaration=True, pretty_print=True
-    )
+    return root
+
+
+def process_image_sync(image_path: Path, out_path: Path):
+    """Process a single image using blocking"""
+    try:
+        img = cv2.imread(str(image_path))
+    except Exception as exc:
+        logger.critical(exc, exc_info=True)
+        raise exc
+
+    if img is None:
+        logger.critical("Failed to read image '%s'", image_path.resolve())
+        raise IOError(f"Failed to read image '{image_path.resolve()}'")
+
+    try:
+        etree.ElementTree(gen_xml(image_path, img)).write(
+            str(out_path), encoding="UTF-8", xml_declaration=True, pretty_print=True
+        )
+    except Exception as exc:
+        logger.critical(exc, exc_info=True)
+        raise exc
+
+
+async def process_image_async(image_path: Path, out_path: Path) -> None:
+    """Process a single image in a non-blocking manner"""
+    loop = asyncio.get_running_loop()
+    with ProcessPoolExecutor() as pool:
+        await loop.run_in_executor(pool, process_image_sync, image_path, out_path)
+
+    logger.info("💥 %s", out_path.resolve())
+
+
+async def process_batch(image_paths: List[Path], out_dir: Path) -> None:
+    """Process a batch of images concurrently"""
+    with ProcessPoolExecutor() as pool:
+        loop = asyncio.get_running_loop()
+        tasks = []
+
+        for image_path in image_paths:
+            out_path = out_dir / f"{image_path.stem}.xml"
+            tasks.append(
+                loop.run_in_executor(pool, process_image_sync, image_path, out_path)
+            )
+
+        completed_tasks = await asyncio.gather(*tasks)
+        for image_path in image_paths:
+            out_path = out_dir / f"{image_path.stem}.xml"
+            logger.info("💥 %s", out_path.resolve())
+
+    logger.info("✅ All images processed to %s", out_dir)
+
+
+def main(args: List[str]) -> None:
+    """script entry-point"""
+
+    params = parse_args(args)
+
+    init(params, log_file=params.input_path.with_suffix(".ir"))
+
+    if params.input_path.is_dir():
+        params.out_path.mkdir(parents=True, exist_ok=True)
+        image_paths = [
+            img
+            for fmt in supported_image_formats
+            for img in params.input_path.glob(f"*.{fmt}")
+        ]
+        asyncio.run(process_batch(image_paths, params.out_path))
+    else:
+        process_image_sync(params.input_path, params.out_path)
+
     logger.info("💥 %s", params.out_path.resolve())
 
 
