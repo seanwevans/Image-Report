@@ -48,22 +48,8 @@ The script generates an XML report containing:
 - **Bounding Boxes**: Detected regions in the image.
 - **Spectral Analysis**: Row and column segmentation based on pixel density.
 
-## Functions Overview
-- **parse_args()** : Parses command-line arguments.
-- **init()** : Initializes logging configuration.
-- **non_max_suppression()** : Reduces overlapping bounding boxes.
-- **boxes_from_image()** : Detects bounding boxes in the image.
-- **spectral_analysis()** : Analyzes pixel distribution.
-- **hash functions** : Multiple hash algorithms for feature extraction.
-- **create_element()** : Helper function to generate XML elements.
-- **main()** : Entry point to process the image and generate the report.
-
 ## Logging
 Logs are saved alongside the image with the `.ir` extension, providing details of the process and any encountered issues.
 
 ## License
 This project is licensed under the MIT License.
-
-## Version
-- **1.0.0**
-
