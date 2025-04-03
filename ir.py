@@ -33,10 +33,12 @@ from PIL import Image
 import imagehash
 from skimage.feature import local_binary_pattern
 from skimage.feature import hog as skimage_hog
+from skimage.morphology import skeletonize, thin
+from skimage.measure import label, regionprops
 
 
 PROG = Path(__file__).stem
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
@@ -186,7 +188,7 @@ def non_max_suppression(boxes: np.ndarray, overlap_thresh: float) -> np.ndarray:
 
 
 def boxes_from_image(img: np.ndarray, overlap_thresh: float = 0) -> np.ndarray:
-    """Use MSER to get bounding boxes for all contiguous pixel areas in img"""
+    """Get bounding boxes for all contiguous pixel areas"""
 
     boxes = []
 
@@ -351,6 +353,311 @@ def fourier_hash(image: np.ndarray) -> str:
     return hash_value
 
 
+def skeleton_hash(image: np.ndarray) -> str:
+    """
+    Create a hash based on the skeleton of a character.
+    This is useful for detecting structurally similar characters.
+    """
+    if len(image.shape) > 2:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+
+    _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+    binary = binary.astype(bool)
+
+    skeleton = skeletonize(binary)
+    skeleton_img = skeleton.astype(np.uint8) * 255
+
+    def neighbors(pos, img):
+        y, x = pos
+        n_count = 0
+        for i in range(max(0, y - 1), min(img.shape[0], y + 2)):
+            for j in range(max(0, x - 1), min(img.shape[1], x + 2)):
+                if (i != y or j != x) and img[i, j]:
+                    n_count += 1
+        return n_count
+
+    endpoints = []
+    branchpoints = []
+    for y in range(skeleton_img.shape[0]):
+        for x in range(skeleton_img.shape[1]):
+            if skeleton_img[y, x]:
+                n = neighbors((y, x), skeleton_img)
+                if n == 1:
+                    endpoints.append((y, x))
+                elif n > 2:
+                    branchpoints.append((y, x))
+
+    endpoint_count = len(endpoints)
+    branch_count = len(branchpoints)
+    y_indices, x_indices = np.where(skeleton_img)
+    if len(y_indices) > 0 and len(x_indices) > 0:
+        cy = np.mean(y_indices)
+        cx = np.mean(x_indices)
+    else:
+        cy, cx = 0, 0
+
+    top_left = sum(1 for y, x in endpoints if y < cy and x < cx)
+    top_right = sum(1 for y, x in endpoints if y < cy and x >= cx)
+    bottom_left = sum(1 for y, x in endpoints if y >= cy and x < cx)
+    bottom_right = sum(1 for y, x in endpoints if y >= cy and x >= cx)
+
+    branch_tl = sum(1 for y, x in branchpoints if y < cy and x < cx)
+    branch_tr = sum(1 for y, x in branchpoints if y < cy and x >= cx)
+    branch_bl = sum(1 for y, x in branchpoints if y >= cy and x < cx)
+    branch_br = sum(1 for y, x in branchpoints if y >= cy and x >= cx)
+
+    pixel_count = np.sum(skeleton_img) // 255
+    values = [
+        endpoint_count,
+        branch_count,
+        top_left,
+        top_right,
+        bottom_left,
+        bottom_right,
+        branch_tl,
+        branch_tr,
+        branch_bl,
+        branch_br,
+        pixel_count,
+    ]
+
+    hash_value = "".join(format(min(v, 15), "x") for v in values)
+    return hash_value
+
+
+def contour_hash(image: np.ndarray) -> str:
+    """
+    Create a hash based on character contours.
+    Useful for comparing boundary shapes.
+    """
+
+    if len(image.shape) > 2:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+
+    _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        return "0" * 16
+
+    largest_contour = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(largest_contour)
+    perimeter = cv2.arcLength(largest_contour, True)
+
+    circularity = 0
+    if perimeter > 0:
+        circularity = 4 * np.pi * area / (perimeter * perimeter)
+
+    M = cv2.moments(largest_contour)
+    hu_moments = cv2.HuMoments(M).flatten()
+    normalized_moments = []
+    for moment in hu_moments:
+        if moment != 0:
+            normalized_moments.append(
+                min(15, int(-np.sign(moment) * np.log10(abs(moment)) * 1.5))
+            )
+        else:
+            normalized_moments.append(0)
+
+    aspect_ratio = 0
+    if M["m00"] != 0:
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        aspect_ratio = float(w) / h if h > 0 else 0
+
+    normalized_moments = [min(15, max(0, m)) for m in normalized_moments]
+    hash_components = normalized_moments + [
+        int(circularity * 15),
+        int(aspect_ratio * 15),
+    ]
+
+    hash_value = "".join(format(int(v), "x") for v in hash_components[:16])
+    return hash_value
+
+
+def zoning_hash(image: np.ndarray) -> str:
+    """
+    Create a hash based on zoning the character.
+    Divides the image into a grid and calculates pixel density in each zone.
+    """
+
+    if len(image.shape) > 2:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+
+    _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+
+    zones_y, zones_x = 4, 4
+    height, width = binary.shape
+    zone_height = height // zones_y
+    zone_width = width // zones_x
+    densities = []
+
+    for y in range(zones_y):
+        for x in range(zones_x):
+            y_start = y * zone_height
+            y_end = (y + 1) * zone_height if y < zones_y - 1 else height
+            x_start = x * zone_width
+            x_end = (x + 1) * zone_width if x < zones_x - 1 else width
+            zone = binary[y_start:y_end, x_start:x_end]
+            zone_size = (y_end - y_start) * (x_end - x_start)
+            if zone_size > 0:
+                density = np.sum(zone) / (zone_size * 255)
+                densities.append(min(15, int(density * 16)))
+            else:
+                densities.append(0)
+
+    hash_value = "".join(format(d, "x") for d in densities)
+    return hash_value
+
+
+def stroke_direction_hash(image: np.ndarray) -> str:
+    """
+    Create a hash based on stroke directions.
+    Detects dominant stroke directions in the character.
+    """
+    if len(image.shape) > 2:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+
+    gradient_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    gradient_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+
+    magnitude = cv2.magnitude(gradient_x, gradient_y)
+    direction = cv2.phase(gradient_x, gradient_y, angleInDegrees=True)
+
+    threshold = np.mean(magnitude) * 1.5
+    mask = magnitude > threshold
+
+    bins = 8
+    bin_size = 360 // bins
+    direction_bins = np.zeros(bins, dtype=int)
+
+    for i in range(direction.shape[0]):
+        for j in range(direction.shape[1]):
+            if mask[i, j]:
+                bin_idx = int(direction[i, j] // bin_size) % bins
+                direction_bins[bin_idx] += 1
+
+    total = np.sum(direction_bins)
+    if total > 0:
+        normalized_bins = (direction_bins / total * 15).astype(int)
+    else:
+        normalized_bins = np.zeros(bins, dtype=int)
+
+    horizontal_sum = direction_bins[0] + direction_bins[4]  # 0° and 180°
+    vertical_sum = direction_bins[2] + direction_bins[6]  # 90° and 270°
+
+    if vertical_sum > 0:
+        hv_ratio = min(15, int((horizontal_sum / vertical_sum) * 4))
+    else:
+        hv_ratio = 15
+
+    diagonal1_sum = direction_bins[1] + direction_bins[5]  # 45° and 225°
+    diagonal2_sum = direction_bins[3] + direction_bins[7]  # 135° and 315°
+
+    if diagonal2_sum > 0:
+        diag_ratio = min(15, int((diagonal1_sum / diagonal2_sum) * 4))
+    else:
+        diag_ratio = 15
+
+    bin_hash = "".join(format(b, "x") for b in normalized_bins)
+    ratio_hash = format(hv_ratio, "x") + format(diag_ratio, "x")
+
+    return bin_hash + ratio_hash
+
+
+def junction_hash(image: np.ndarray) -> str:
+    """
+    Create a hash based on junction analysis.
+    Detects and categorizes junction points in the character.
+    """
+    if len(image.shape) > 2:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+
+    _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+    binary = binary.astype(bool)
+    thinned = thin(binary)
+    skeleton_img = thinned.astype(np.uint8) * 255
+
+    def count_neighbors(img, y, x):
+        n_count = 0
+        neighbors_pos = []
+        for i in range(max(0, y - 1), min(img.shape[0], y + 2)):
+            for j in range(max(0, x - 1), min(img.shape[1], x + 2)):
+                if (i != y or j != x) and img[i, j]:
+                    n_count += 1
+                    neighbors_pos.append((i, j))
+        return n_count, neighbors_pos
+
+    endpoints = []  # 1 neighbor
+    continuation = []  # 2 neighbors
+    t_junctions = []  # 3 neighbors
+    x_junctions = []  # 4+ neighbors
+
+    for y in range(skeleton_img.shape[0]):
+        for x in range(skeleton_img.shape[1]):
+            if skeleton_img[y, x]:
+                n_count, _ = count_neighbors(skeleton_img, y, x)
+                if n_count == 1:
+                    endpoints.append((y, x))
+                elif n_count == 2:
+                    continuation.append((y, x))
+                elif n_count == 3:
+                    t_junctions.append((y, x))
+                elif n_count >= 4:
+                    x_junctions.append((y, x))
+
+    height, width = skeleton_img.shape
+
+    quadrants = [
+        [(0, 0), (height // 2, width // 2)],  # Top-left
+        [(0, width // 2), (height // 2, width)],  # Top-right
+        [(height // 2, 0), (height, width // 2)],  # Bottom-left
+        [(height // 2, width // 2), (height, width)],  # Bottom-right
+    ]
+
+    endpoint_dist = [0, 0, 0, 0]
+    t_junction_dist = [0, 0, 0, 0]
+    x_junction_dist = [0, 0, 0, 0]
+
+    for i, ((y1, x1), (y2, x2)) in enumerate(quadrants):
+        for y, x in endpoints:
+            if y1 <= y < y2 and x1 <= x < x2:
+                endpoint_dist[i] += 1
+
+        for y, x in t_junctions:
+            if y1 <= y < y2 and x1 <= x < x2:
+                t_junction_dist[i] += 1
+
+        for y, x in x_junctions:
+            if y1 <= y < y2 and x1 <= x < x2:
+                x_junction_dist[i] += 1
+
+    total_endpoints = len(endpoints)
+    total_t_junctions = len(t_junctions)
+    total_x_junctions = len(x_junctions)
+    total_continuation = len(continuation)
+
+    features = [
+        min(15, total_endpoints),
+        min(15, total_t_junctions),
+        min(15, total_x_junctions),
+        min(15, total_continuation // 16),
+    ] + [min(15, v) for v in endpoint_dist + t_junction_dist + x_junction_dist]
+
+    hash_value = "".join(format(f, "x") for f in features)
+    return hash_value
+
+
 cv2_hash_functions = {
     "Average": cv2.img_hash.AverageHash_create(),
     "BlockMean": cv2.img_hash.BlockMeanHash_create(),
@@ -373,6 +680,11 @@ hash_functions = {
     "fuzzy": fuzzy_hash,
     "geometric": geometric_hash,
     "fourier": fourier_hash,
+    "skeleton": skeleton_hash,
+    "contour": contour_hash,
+    "zoning": zoning_hash,
+    "stroke_direction": stroke_direction_hash,
+    "junction": junction_hash,
 }
 
 
@@ -472,16 +784,22 @@ def gen_xml(input_path: Path, img: np.ndarray) -> etree.Element:
     #     <hash>
     hash_elem = etree.SubElement(info_elem, "hash")
     for func in cv2_hash_functions:
-        create_hash_element(hash_elem, func, gimg)
+        try:
+            create_hash_element(hash_elem, func, gimg)
+        except:
+            pass
 
-    create_hash_element(hash_elem, histogram_hash, img)
-    create_hash_element(hash_elem, gabor_hash, gimg)
-    create_hash_element(hash_elem, tamura_hash, gimg)
-    create_hash_element(hash_elem, fuzzy_hash, gimg)
-    create_hash_element(hash_elem, geometric_hash, gimg)
-    create_hash_element(hash_elem, fourier_hash, gimg)
-    create_hash_element(hash_elem, dhash, pimg)
-    create_hash_element(hash_elem, wavelet_hash, pimg)
+    for func in hash_functions.values():
+        if func.__name__ in ["dhash", "wavelet_hash"]:
+            to_pass = pimg
+        elif func.__name__ == "histogram_hash":
+            to_pass = img
+        else:
+            to_pass = gimg
+        try:
+            create_hash_element(hash_elem, func, to_pass)
+        except:
+            pass
 
     #     <dimension>
     dim_elem = create_element(info_elem, "dimensions")
