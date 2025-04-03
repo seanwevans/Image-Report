@@ -1,0 +1,625 @@
+#!/usr/bin/env python3
+
+"""ir - Generate an XML report with metadata and features of an image."""
+
+import asyncio
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+import logging
+from pathlib import Path
+import sys
+from typing import List, Dict, Optional, Tuple, Set, Union
+import time
+
+import cv2
+import numpy as np
+from lxml import etree
+from PIL import Image
+import aiofiles
+
+from utils import (
+    PROG,
+    VERSION,
+    SUPPORTED_IMAGE_FORMATS,
+    logger,
+    setup_logging,
+    parse_args,
+    create_element,
+)
+from hashing_config import (
+    get_selected_hashes,
+    CV2_HASH_FUNCTIONS,
+    IMAGEHASH_FUNCTIONS,
+    CUSTOM_HASH_FUNCTIONS_GRAY,
+    CUSTOM_HASH_FUNCTIONS_COLOR,
+    ALL_HASHES,
+)
+from papersize import STANDARD_SIZES_MM, guess_paper_size, guess_dpi, MM_PER_INCH
+from analysis import find_bounding_boxes, calculate_spectral_analysis
+
+
+def _add_metadata(
+    parent: etree._Element,
+    input_path: Path,
+    img_shape: Tuple[int, ...],
+    default_dpi: int,
+) -> None:
+    """Adds the <metadata> section to the XML report."""
+
+    logger.debug("Adding metadata section...")
+    meta_elem = create_element(parent, "metadata")
+
+    create_element(meta_elem, "source_path", text=str(input_path.resolve()))
+    create_element(meta_elem, "filename", text=input_path.name)
+
+    height, width = img_shape[:2]
+    dims_elem = create_element(meta_elem, "dimensions_pixels")
+    create_element(dims_elem, "width", text=str(width))
+    create_element(dims_elem, "height", text=str(height))
+    create_element(dims_elem, "total_pixels", text=str(width * height))
+
+    size_elem = create_element(
+        meta_elem, "dimensions_physical", attrib={"assumed_dpi": str(default_dpi)}
+    )
+    guesses = guess_paper_size(width, height, default_dpi)
+
+    if guesses:
+        best_guess_name = next(iter(guesses))
+        best_guess_diff = guesses[best_guess_name]
+        confidence = max(0.0, 1.0 - best_guess_diff / (width + height))
+
+        create_element(
+            size_elem,
+            "best_guess",
+            text=best_guess_name,
+            attrib={
+                "difference_score": f"{best_guess_diff:.2f}",
+                "confidence": f"{confidence:.4f}",
+            },
+        )
+
+        candidates_elem = create_element(size_elem, "candidates")
+        for i, (name, diff) in enumerate(list(guesses.items())[:3]):
+            cand_conf = max(0.0, 1.0 - diff / (width + height))
+            create_element(
+                candidates_elem,
+                "match",
+                text=name,
+                attrib={
+                    "rank": str(i + 1),
+                    "difference_score": f"{diff:.2f}",
+                    "confidence": f"{cand_conf:.4f}",
+                },
+            )
+
+        dpi_w, dpi_h = guess_dpi(best_guess_name, width, height)
+        if dpi_w is not None and dpi_h is not None:
+            res_elem = create_element(
+                size_elem,
+                "estimated_resolution",
+                attrib={"unit": "dpi", "based_on": best_guess_name},
+            )
+            avg_dpi = (dpi_w + dpi_h) / 2.0
+            create_element(res_elem, "dpi_width", text=f"{dpi_w:.1f}")
+            create_element(res_elem, "dpi_height", text=f"{dpi_h:.1f}")
+            create_element(res_elem, "dpi_average", text=f"{avg_dpi:.1f}")
+            est_w_mm = (width / avg_dpi) * MM_PER_INCH if avg_dpi > 0 else 0
+            est_h_mm = (height / avg_dpi) * MM_PER_INCH if avg_dpi > 0 else 0
+            create_element(
+                size_elem,
+                "estimated_size_mm",
+                attrib={"based_on": f"average estimated dpi ({avg_dpi:.1f})"},
+            )
+            create_element(size_elem, "width_mm", text=f"{est_w_mm:.1f}")
+            create_element(size_elem, "height_mm", text=f"{est_h_mm:.1f}")
+
+    else:
+        create_element(size_elem, "message", text="Could not guess paper size.")
+
+    logger.debug("Finished metadata section.")
+
+
+def _add_hashes(
+    parent: etree._Element,
+    selected_hashes: Set[str],
+    img_color: np.ndarray,
+    img_gray: np.ndarray,
+    img_pil: Image.Image,
+) -> None:
+    """Computes and adds selected hashes to the XML report."""
+    logger.debug("Adding hashes section (selected: %d)...", len(selected_hashes))
+    if not selected_hashes:
+        logger.info("No hashes selected for computation.")
+        return
+
+    hash_elem = create_element(
+        parent, "hashes", attrib={"count": str(len(selected_hashes))}
+    )
+    start_time = time.monotonic()
+
+    computed_count = 0
+    failed_count = 0
+
+    for hash_name in sorted(list(selected_hashes)):
+        hash_value = None
+        status = "computed"
+        try:
+            if hash_name in CV2_HASH_FUNCTIONS:
+                img_input = img_color if hash_name == "ColorMoment" else img_gray
+                if img_input is None or img_input.size == 0:
+                    raise ValueError("Input image empty")
+                hash_result = CV2_HASH_FUNCTIONS[hash_name](img_input)
+                hash_value = hash_result.tobytes().hex()
+                logger.debug(" -> Computed CV2 hash '%s'", hash_name)
+            elif hash_name in IMAGEHASH_FUNCTIONS:
+                if img_pil is None:
+                    raise ValueError("PIL image not available")
+                hash_value = IMAGEHASH_FUNCTIONS[hash_name](img_pil)
+                logger.debug(" -> Computed ImageHash hash '%s'", hash_name)
+            elif hash_name in CUSTOM_HASH_FUNCTIONS_GRAY:
+                if img_gray is None or img_gray.size == 0:
+                    raise ValueError("Grayscale image not available or empty")
+                hash_value = CUSTOM_HASH_FUNCTIONS_GRAY[hash_name](img_gray)
+                logger.debug(" -> Computed Custom Gray hash '%s'", hash_name)
+            elif hash_name in CUSTOM_HASH_FUNCTIONS_COLOR:
+                if img_color is None or img_color.size == 0:
+                    raise ValueError("Color image not available or empty")
+                hash_value = CUSTOM_HASH_FUNCTIONS_COLOR[hash_name](img_color)
+                logger.debug(" -> Computed Custom Color hash '%s'", hash_name)
+            else:
+                logger.warning(
+                    "Hash function '%s' is selected but not defined/found.", hash_name
+                )
+                status = "not_found"
+                failed_count += 1
+
+            if hash_value is not None:
+                if isinstance(hash_value, str) and hash_value.endswith(
+                    ("_error", "_unavailable", "_empty_input")
+                ):
+                    status = f"failed: {hash_value}"
+                    hash_value = None
+                    failed_count += 1
+                    logger.warning(
+                        "Hash computation failed for '%s': %s", hash_name, status
+                    )
+                else:
+                    create_element(
+                        hash_elem,
+                        "hash",
+                        text=str(hash_value),
+                        attrib={"type": hash_name, "status": status},
+                    )
+                    computed_count += 1
+            elif status != "not_found":
+                status = "failed: unknown_reason"
+                failed_count += 1
+                logger.warning(
+                    "Hash computation failed for '%s': %s", hash_name, status
+                )
+                create_element(
+                    hash_elem, "hash", attrib={"type": hash_name, "status": status}
+                )
+
+        except Exception as exc:
+            status = f"failed: {type(exc).__name__}"
+            failed_count += 1
+            logger.error(
+                "Error computing hash '%s': %s", hash_name, exc, exc_info=False
+            )
+            create_element(
+                hash_elem, "hash", attrib={"type": hash_name, "status": status}
+            )
+
+    duration = time.monotonic() - start_time
+    hash_elem.set("computed_count", str(computed_count))
+    hash_elem.set("failed_count", str(failed_count))
+    hash_elem.set("duration_sec", f"{duration:.3f}")
+    logger.info(
+        "Finished hashing: %d computed, %d failed in %.3f seconds.",
+        computed_count,
+        failed_count,
+        duration,
+    )
+
+
+def _add_bounding_boxes(
+    parent: etree._Element, image: np.ndarray, nms_threshold: float
+) -> None:
+    """Finds and adds bounding box information to the XML report."""
+    logger.debug("Adding bounding boxes section...")
+    boxes = find_bounding_boxes(image, nms_overlap_thresh=nms_threshold)
+
+    box_elem_parent = create_element(parent, "analysis")
+    box_elem = create_element(
+        box_elem_parent,
+        "bounding_boxes",
+        attrib={
+            "count": str(len(boxes)),
+            "format": "x1,y1,x2,y2",
+            "coordinate_system": "top-left origin (pixels)",
+            "nms_threshold": f"{nms_threshold:.2f}",
+        },
+    )
+
+    for i, (x1, y1, x2, y2) in enumerate(boxes):
+        create_element(
+            box_elem,
+            "box",
+            attrib={
+                "id": str(i),
+                "x1": str(x1),
+                "y1": str(y1),
+                "x2": str(x2),
+                "y2": str(y2),
+                "width": str(x2 - x1),
+                "height": str(y2 - y1),
+            },
+        )
+    logger.debug("Finished bounding boxes section.")
+
+
+def _add_spectral_analysis(parent: etree._Element, image: np.ndarray) -> None:
+    """Calculates and adds spectral analysis (projection profiles) to the XML report."""
+    logger.debug("Adding spectral analysis section...")
+    counts = calculate_spectral_analysis(image)
+
+    analysis_parent = parent.find("analysis")
+    if analysis_parent is None:
+        analysis_parent = create_element(parent, "analysis")
+
+    if counts:
+        counts_elem = create_element(
+            analysis_parent, "spectral_analysis", attrib={"unit": "black_pixel_count"}
+        )
+
+        horiz_elem = create_element(
+            counts_elem,
+            "horizontal_projection",
+            attrib={"length": str(len(counts["horizontal"]))},
+        )
+        for i, count in enumerate(counts["horizontal"]):
+            if count > 0:
+                create_element(
+                    horiz_elem, "row", text=str(count), attrib={"index": str(i)}
+                )
+
+        vert_elem = create_element(
+            counts_elem,
+            "vertical_projection",
+            attrib={"length": str(len(counts["vertical"]))},
+        )
+        for i, count in enumerate(counts["vertical"]):
+            if count > 0:
+                create_element(
+                    vert_elem, "column", text=str(count), attrib={"index": str(i)}
+                )
+    else:
+        create_element(
+            analysis_parent,
+            "spectral_analysis",
+            text="Analysis failed or image unsuitable.",
+        )
+
+    logger.debug("Finished spectral analysis section.")
+
+
+def generate_report_xml(
+    input_path: Path,
+    img_color: np.ndarray,
+    selected_hashes: Set[str],
+    nms_threshold: float,
+    default_dpi: int,
+) -> Optional[etree._Element]:
+    """
+    Generates the full XML report structure for a single image.
+
+    Args:
+        input_path: Path to the source image file.
+        img_color: Image loaded in BGR format (NumPy array).
+        selected_hashes: Set of hash names to compute.
+        nms_threshold: Overlap threshold for bounding box NMS.
+        default_dpi: Assumed DPI for paper size guessing.
+
+    Returns:
+        The root etree.Element of the report, or None if a critical error occurs.
+    """
+    logger.info("Generating XML report for: %s", input_path.name)
+    start_time = time.monotonic()
+
+    try:
+        img_gray = cv2.cvtColor(img_color, cv2.COLOR_BGR2GRAY)
+        img_pil = Image.fromarray(cv2.cvtColor(img_color, cv2.COLOR_BGR2RGB))
+        height, width = img_color.shape[:2]
+
+        root = etree.Element(
+            "image_report", attrib={"version": VERSION, "source_file": input_path.name}
+        )
+
+        _add_metadata(root, input_path, img_color.shape, default_dpi)
+        _add_hashes(root, selected_hashes, img_color, img_gray, img_pil)
+        _add_bounding_boxes(root, img_color, nms_threshold)
+        _add_spectral_analysis(root, img_color)
+
+        duration = time.monotonic() - start_time
+        logger.info(
+            "XML report generation complete for %s (%.3f sec)",
+            input_path.name,
+            duration,
+        )
+        root.set("generation_duration_sec", f"{duration:.3f}")
+
+        return root
+
+    except Exception as e:
+        logger.critical(
+            "Failed to generate XML report for %s: %s",
+            input_path.name,
+            e,
+            exc_info=True,
+        )
+        return None
+
+
+def process_single_image(
+    image_path: Path,
+    output_path: Path,
+    selected_hashes: Set[str],
+    nms_threshold: float,
+    default_dpi: int,
+) -> bool:
+    """
+    Loads, analyzes, and writes the XML report for a single image.
+
+    Returns:
+        True if successful, False otherwise.
+    """
+    logger.info(
+        "Processing image: %s -> %s", image_path.resolve(), output_path.resolve()
+    )
+    try:
+        with open(image_path, "rb") as f:
+            img_bytes = np.frombuffer(f.read(), np.uint8)
+            img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
+
+        if img is None:
+            logger.error("Failed to load image file: %s", image_path)
+            return False
+
+        xml_root = generate_report_xml(
+            input_path=image_path,
+            img_color=img,
+            selected_hashes=selected_hashes,
+            nms_threshold=nms_threshold,
+            default_dpi=default_dpi,
+        )
+
+        if xml_root is None:
+            logger.error("XML generation failed for: %s", image_path)
+            return False
+
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            tree = etree.ElementTree(xml_root)
+            tree.write(
+                str(output_path),
+                encoding="UTF-8",
+                xml_declaration=True,
+                pretty_print=True,
+            )
+            logger.info("Successfully wrote XML report: %s", output_path)
+            return True
+        except IOError as e:
+            logger.error("Failed to write XML report to %s: %s", output_path, e)
+            return False
+        except Exception as e:
+            logger.error(
+                "An unexpected error occurred while writing XML for %s: %s",
+                output_path,
+                e,
+                exc_info=True,
+            )
+            return False
+
+    except FileNotFoundError:
+        logger.error("Input image file not found: %s", image_path)
+        return False
+    except cv2.error as e:
+        logger.error("OpenCV error processing %s: %s", image_path, e)
+        return False
+    except Exception as e:
+        logger.critical(
+            "Unhandled exception processing %s: %s", image_path, e, exc_info=True
+        )
+        return False
+
+
+async def process_batch_async(
+    image_paths: List[Path],
+    output_dir: Path,
+    selected_hashes: Set[str],
+    nms_threshold: float,
+    default_dpi: int,
+    continue_on_error: bool,
+    max_workers: Optional[int],
+) -> Tuple[int, int]:
+    """
+    Processes a batch of images concurrently using ProcessPoolExecutor.
+
+    Returns:
+        Tuple (success_count, failure_count).
+    """
+    logger.info(
+        "Starting batch processing for %d images -> %s", len(image_paths), output_dir
+    )
+    logger.info("Max workers: %s", max_workers if max_workers else "System Default")
+    logger.info("Continue on error: %s", continue_on_error)
+
+    success_count = 0
+    failure_count = 0
+    tasks = []
+    with ProcessPoolExecutor(max_workers=max_workers) as pool:
+        loop = asyncio.get_running_loop()
+
+        for image_path in image_paths:
+            output_path = output_dir / f"{image_path.stem}.ir.xml"
+            future = loop.run_in_executor(
+                pool,
+                process_single_image,
+                image_path,
+                output_path,
+                selected_hashes,
+                nms_threshold,
+                default_dpi,
+            )
+            tasks.append(future)
+
+        for i, future in enumerate(asyncio.as_completed(tasks)):
+            image_path = image_paths[i]
+            try:
+                result_ok = await future
+                if result_ok:
+                    success_count += 1
+                else:
+                    failure_count += 1
+                    if not continue_on_error:
+                        logger.critical(
+                            "Stopping batch processing due to error (continue_on_error=False)."
+                        )
+                        break
+
+            except Exception as exc:
+                failure_count += 1
+                logger.error(
+                    "Task for %s failed with exception: %s",
+                    image_path.name,
+                    exc,
+                    exc_info=False,
+                )
+                if not continue_on_error:
+                    logger.critical(
+                        "Stopping batch processing due to unhandled exception (continue_on_error=False)."
+                    )
+                    break
+
+    logger.info(
+        "Batch processing finished. Success: %d, Failed: %d",
+        success_count,
+        failure_count,
+    )
+    return success_count, failure_count
+
+
+def main(cli_args: List[str]) -> int:
+    """Script entry point."""
+    params = parse_args(cli_args)
+
+    setup_logging(
+        log_level_stream=params.log_level_console_int,
+        log_level_file=params.log_level_file_int,
+        log_file=params.log_file,
+    )
+    logger.info("%s v%s", PROG, VERSION)
+    logger.debug("Arguments:")
+    for param, value in vars(params).items():
+        logger.debug("  %-20s: %s", param, value)
+
+    selected_hashes = get_selected_hashes(params.hashes)
+    if not selected_hashes:
+        logger.warning("No hashes selected based on specifier: '%s'", params.hashes)
+    else:
+        logger.debug("Selected %d hashes:", len(selected_hashes))
+        for selected_hash in selected_hashes:
+            logger.debug("   %s", selected_hash)
+
+    start_time = time.monotonic()
+    exit_code = 0
+    processed_count = 0
+    failed_count = 0
+
+    try:
+        if params.input_path.is_dir():
+            logger.debug("Input is a directory, starting batch mode.")
+            output_dir = params.output_path
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            image_paths = []
+            for fmt in SUPPORTED_IMAGE_FORMATS:
+                image_paths.extend(params.input_path.glob(f"*.{fmt}"))
+                image_paths.extend(params.input_path.glob(f"*.{fmt.upper()}"))
+
+            if not image_paths:
+                logger.warning(
+                    "No supported image files found in directory: %s", params.input_path
+                )
+                return 1
+
+            logger.info("Found %d images.", len(image_paths))
+
+            processed_count, failed_count = asyncio.run(
+                process_batch_async(
+                    image_paths=image_paths,
+                    output_dir=output_dir,
+                    selected_hashes=selected_hashes,
+                    nms_threshold=params.nms_threshold,
+                    default_dpi=params.default_dpi,
+                    continue_on_error=params.continue_on_error,
+                    max_workers=params.max_workers,
+                )
+            )
+
+        elif params.input_path.is_file():
+            logger.debug("Input is a single file, starting single image mode.")
+            output_path = params.output_path
+
+            if output_path.is_dir() or output_path.name == "":
+                output_path = output_path / f"{params.input_path.stem}.ir.xml"
+                logger.debug(
+                    "Output path is directory, setting output file to: %s", output_path
+                )
+
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            success = process_single_image(
+                image_path=params.input_path,
+                output_path=output_path,
+                selected_hashes=selected_hashes,
+                nms_threshold=params.nms_threshold,
+                default_dpi=params.default_dpi,
+            )
+            processed_count = 1 if success else 0
+            failed_count = 0 if success else 1
+
+        else:
+            logger.critical(
+                "Input path does not exist or is not a file/directory: %s",
+                params.input_path,
+            )
+            exit_code = 1
+
+        total_time = time.monotonic() - start_time
+        logger.info("-" * 50)
+        if processed_count > 0 or failed_count > 0:
+            mode = "Batch" if params.input_path.is_dir() else "Single"
+            logger.info("%s Processing Summary:", mode)
+            logger.info("  Successfully processed: %d", processed_count)
+            logger.info("  Failed to process: %d", failed_count)
+            logger.info("  Total time taken: %.3f seconds", total_time)
+            if failed_count > 0:
+                exit_code = 1
+        elif exit_code == 0:
+            logger.info("No images were processed.")
+
+        return exit_code
+
+    except Exception as e:
+        logger.critical(
+            "A critical error occurred during execution: %s", e, exc_info=True
+        )
+        return 1
+    finally:
+        logging.shutdown()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
