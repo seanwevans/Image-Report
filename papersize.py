@@ -1,10 +1,10 @@
 # papersize.py - Paper size definitions and guessing logic
 
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 import numpy as np
 
-from utils import logger  # Use the logger from utils
+from utils import logger
 
 
 @dataclass
@@ -52,9 +52,7 @@ STANDARD_SIZES_MM: Dict[str, PaperSizeStandard] = {
     # U.S. Sizes (converted to millimeters)
     "Letter": PaperSizeStandard(8.5 * 25.4, 11 * 25.4),  # 215.9 x 279.4
     "Legal": PaperSizeStandard(8.5 * 25.4, 14 * 25.4),  # 215.9 x 355.6
-    "Tabloid": PaperSizeStandard(
-        11 * 25.4, 17 * 25.4
-    ),  # 279.4 x 431.8 (Ledger is Landscape version)
+    "Tabloid": PaperSizeStandard(11 * 25.4, 17 * 25.4),  # 279.4 x 431.8
     "Ledger": PaperSizeStandard(17 * 25.4, 11 * 25.4),  # 431.8 x 279.4
     # Japanese JIS B Sizes
     "JIS B0": PaperSizeStandard(1030, 1456),
@@ -99,17 +97,14 @@ def guess_paper_size(pixel_width: int, pixel_height: int, dpi: int) -> Dict[str,
     differences: Dict[str, float] = {}
 
     for name, standard_size in STANDARD_SIZES_MM.items():
-        # Calculate difference for portrait match
         diff_portrait = abs(image_width_mm - standard_size.width_mm) + abs(
             image_height_mm - standard_size.height_mm
         )
 
-        # Calculate difference for landscape match
         diff_landscape = abs(image_width_mm - standard_size.height_mm) + abs(
             image_height_mm - standard_size.width_mm
         )
 
-        # Use the smaller difference (allows matching regardless of image orientation)
         differences[name] = min(diff_portrait, diff_landscape)
         logger.debug(
             " -> %s: Portrait diff=%.2f, Landscape diff=%.2f. Min diff=%.2f",
@@ -119,16 +114,15 @@ def guess_paper_size(pixel_width: int, pixel_height: int, dpi: int) -> Dict[str,
             differences[name],
         )
 
-    # Sort by difference score (lower is better)
     sorted_guesses = sorted(differences.items(), key=lambda item: item[1])
 
-    logger.info(
+    logger.debug(
         "Top paper size guesses (based on %d DPI): %s",
         dpi,
         [(name, f"{score:.2f}") for name, score in sorted_guesses[:3]],
     )
 
-    return dict(sorted_guesses)  # Return sorted dictionary
+    return dict(sorted_guesses)
 
 
 def guess_dpi(
@@ -152,7 +146,6 @@ def guess_dpi(
 
     standard_size = STANDARD_SIZES_MM[paper_type]
 
-    # Check both portrait and landscape orientations of the standard size
     paper_width_in_p = standard_size.width_mm / MM_PER_INCH
     paper_height_in_p = standard_size.height_mm / MM_PER_INCH
 
@@ -171,7 +164,6 @@ def guess_dpi(
     if paper_height_in_l > 0:
         dpi_h_l = pixel_height / paper_height_in_l
 
-    # Calculate the average difference between width/height DPI for both orientations
     diff_p = (
         abs(dpi_w_p - dpi_h_p)
         if dpi_w_p is not None and dpi_h_p is not None
@@ -183,7 +175,6 @@ def guess_dpi(
         else float("inf")
     )
 
-    # Choose the orientation where the calculated DPIs for width and height are closest
     if diff_p <= diff_l and dpi_w_p is not None:
         logger.debug(
             "Guessed DPI based on %s (Portrait): width=%.1f, height=%.1f",
@@ -200,7 +191,7 @@ def guess_dpi(
             dpi_h_l,
         )
         return dpi_w_l, dpi_h_l
-    elif dpi_w_p is not None:  # Fallback if only one orientation calculation worked
+    elif dpi_w_p is not None:
         logger.debug(
             "Guessed DPI based on %s (Fallback Portrait): width=%.1f, height=%.1f",
             paper_type,
@@ -208,7 +199,7 @@ def guess_dpi(
             dpi_h_p,
         )
         return dpi_w_p, dpi_h_p
-    elif dpi_w_l is not None:  # Fallback if only one orientation calculation worked
+    elif dpi_w_l is not None:
         logger.debug(
             "Guessed DPI based on %s (Fallback Landscape): width=%.1f, height=%.1f",
             paper_type,

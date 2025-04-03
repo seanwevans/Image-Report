@@ -2,43 +2,38 @@
 
 import cv2
 import imagehash
+import sys
 from typing import Set, Dict, Callable, Union, List, Optional
 import numpy as np
 from PIL import Image
 
-# Define type aliases for clarity
+from skimage.morphology import skeletonize
+from skimage.morphology import thin
+
 ImageType = Union[np.ndarray, Image.Image]
 HashFunctionType = Callable[[ImageType], str]
 
-# --- Hashing Function Implementations (Moved here temporarily for definition,
-# --- ideally they'd be in a separate `hashing_functions.py` and imported)
-# --- Note: For brevity, function bodies are omitted here but are the same as v1.2.0
-# --- Assume functions like dhash, wavelet_hash, histogram_hash, gabor_hash,
-# --- sift_hash, surf_hash, orb_hash, tamura_hash, fuzzy_hash, geometric_hash,
-# --- fourier_hash, skeleton_hash, contour_hash, zoning_hash,
-# --- stroke_direction_hash, junction_hash are defined correctly here or imported.
 
-# Placeholder functions (replace with actual implementations from v1.2.0)
 def feature_to_hash(descriptors: Optional[np.ndarray]) -> str:
     """Quantize descriptors and convert to a hexadecimal digest"""
+
     if descriptors is None or descriptors.size == 0:
-        return "0" * 32  # Or some other indicator of failure/no features
+        return "0" * 32
+
     descriptors = descriptors.flatten()
-    # Ensure descriptors are valid floats beforeastype
     descriptors = descriptors[np.isfinite(descriptors)]
     if descriptors.size == 0:
         return "0" * 32
-    # Normalize potentially large values before scaling
+
     max_val = np.max(np.abs(descriptors))
     if max_val > 0:
         norm_descriptors = descriptors / max_val
     else:
         norm_descriptors = descriptors
-    quantized = (norm_descriptors * 15).astype(int)  # Scale to 0-15 range
-    hash_value = "".join(
-        [format(v & 0xF, "x") for v in quantized[:32]]
-    )  # Use bitwise AND for safety
-    return hash_value.ljust(32, "0")  # Pad if less than 32 chars
+    quantized = (norm_descriptors * 15).astype(int)
+    hash_value = "".join([format(v & 0xF, "x") for v in quantized[:32]])
+
+    return hash_value.ljust(32, "0")
 
 
 def dhash(image: Image.Image) -> str:
@@ -57,7 +52,7 @@ def histogram_hash(image: np.ndarray) -> str:
         histogram = cv2.normalize(histogram, histogram).flatten()
         return "".join([format(int(v * 255), "02x") for v in histogram])
     except cv2.error:
-        return "histogram_error"  # Indicate specific error
+        return "histogram_error"
 
 
 def gabor_hash(image: np.ndarray) -> str:
@@ -79,17 +74,16 @@ def sift_hash(image: np.ndarray) -> str:
         sift = cv2.SIFT_create()
         _, descriptors = sift.detectAndCompute(image, None)
         return feature_to_hash(descriptors)
-    except cv2.error:  # Handles cases where SIFT/SURF might not be available
+    except cv2.error:
         return "sift_unavailable_or_error"
 
 
 def surf_hash(image: np.ndarray) -> str:
     try:
-        # SURF requires opencv-contrib-python
         surf = cv2.xfeatures2d.SURF_create()
         _, descriptors = surf.detectAndCompute(image, None)
         return feature_to_hash(descriptors)
-    except AttributeError:  # Catch if xfeatures2d module isn't present
+    except AttributeError:
         return "surf_unavailable"
     except cv2.error:
         return "surf_error"
@@ -104,20 +98,18 @@ def orb_hash(image: np.ndarray) -> str:
         return "orb_error"
 
 
-# --- Add ALL other custom hash implementations here (tamura, fuzzy, etc.) ---
-# (Assuming they are defined as before)
 def tamura_hash(image: np.ndarray) -> str:
     try:
         coarseness = np.mean(cv2.absdiff(image[:-1, :], image[1:, :])) + np.mean(
             cv2.absdiff(image[:, :-1], image[:, 1:])
         )
         contrast = np.std(image)
-        # Ensure values are finite before formatting
         coarseness = coarseness if np.isfinite(coarseness) else 0
         contrast = contrast if np.isfinite(contrast) else 0
         hash_value = format(min(int(coarseness), 0xFFFF), "04x") + format(
             min(int(contrast), 0xFFFF), "04x"
-        )  # Limit size
+        )
+
         return hash_value.ljust(8, "0")
     except Exception:
         return "tamura_error"
@@ -147,10 +139,11 @@ def fourier_hash(image: np.ndarray) -> str:
             return "fourier_empty_input"
         f_transform = np.fft.fft2(image)
         f_transform_shifted = np.fft.fftshift(f_transform)
-        # Add epsilon to avoid log(0)
+
         magnitude_spectrum = np.log(np.abs(f_transform_shifted) + 1e-10)
         max_mag = np.max(magnitude_spectrum)
-        if max_mag <= 0:  # Handle uniform images
+
+        if max_mag <= 0:
             magnitude_spectrum_norm = np.zeros_like(magnitude_spectrum)
         else:
             magnitude_spectrum_norm = magnitude_spectrum / max_mag * 255
@@ -161,128 +154,315 @@ def fourier_hash(image: np.ndarray) -> str:
         )
         return hash_value.ljust(32, "0")
     except Exception as e:
-        # Log the specific exception e if logger is available
         return f"fourier_error"
 
 
-# Assume skeleton_hash, contour_hash, zoning_hash, stroke_direction_hash, junction_hash
-# are defined here with appropriate try-except blocks returning error strings.
-# Example for skeleton_hash:
-from skimage.morphology import skeletonize
-
-
 def skeleton_hash(image: np.ndarray) -> str:
-    try:
-        if len(image.shape) > 2:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = image.copy()
-        if gray.size == 0:
-            return "skeleton_empty_input"
+    """
+    Create a hash based on the skeleton of a character.
+    This is useful for detecting structurally similar characters.
+    """
+    if len(image.shape) > 2:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
 
-        _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
-        binary = binary.astype(bool)
+    _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+    binary = binary.astype(bool)
 
-        # Check if binary image is empty before skeletonize
-        if not np.any(binary):
-            return "0" * 11  # Return fixed hash for empty skeleton
+    skeleton = skeletonize(binary)
+    skeleton_img = skeleton.astype(np.uint8) * 255
 
-        skeleton = skeletonize(binary)
-        # ... (rest of the skeleton_hash logic from v1.2.0) ...
-        # Wrap calculations in checks for empty arrays/division by zero
-        # ...
-        # Example values calculation (ensure safety)
-        endpoint_count = 0  # initialize
-        # ... calculate counts safely ...
-        values = [...]  # calculated values
-        hash_value = "".join(format(min(v, 15), "x") for v in values)
-        return hash_value.ljust(11, "0")  # Ensure fixed length
-    except Exception as e:
-        # Log e
-        return "skeleton_error"
+    def neighbors(pos, img):
+        y, x = pos
+        n_count = 0
+        for i in range(max(0, y - 1), min(img.shape[0], y + 2)):
+            for j in range(max(0, x - 1), min(img.shape[1], x + 2)):
+                if (i != y or j != x) and img[i, j]:
+                    n_count += 1
+        return n_count
+
+    endpoints = []
+    branchpoints = []
+    for y in range(skeleton_img.shape[0]):
+        for x in range(skeleton_img.shape[1]):
+            if skeleton_img[y, x]:
+                n = neighbors((y, x), skeleton_img)
+                if n == 1:
+                    endpoints.append((y, x))
+                elif n > 2:
+                    branchpoints.append((y, x))
+
+    endpoint_count = len(endpoints)
+    branch_count = len(branchpoints)
+    y_indices, x_indices = np.where(skeleton_img)
+    if len(y_indices) > 0 and len(x_indices) > 0:
+        cy = np.mean(y_indices)
+        cx = np.mean(x_indices)
+    else:
+        cy, cx = 0, 0
+
+    top_left = sum(1 for y, x in endpoints if y < cy and x < cx)
+    top_right = sum(1 for y, x in endpoints if y < cy and x >= cx)
+    bottom_left = sum(1 for y, x in endpoints if y >= cy and x < cx)
+    bottom_right = sum(1 for y, x in endpoints if y >= cy and x >= cx)
+
+    branch_tl = sum(1 for y, x in branchpoints if y < cy and x < cx)
+    branch_tr = sum(1 for y, x in branchpoints if y < cy and x >= cx)
+    branch_bl = sum(1 for y, x in branchpoints if y >= cy and x < cx)
+    branch_br = sum(1 for y, x in branchpoints if y >= cy and x >= cx)
+
+    pixel_count = np.sum(skeleton_img) // 255
+    values = [
+        endpoint_count,
+        branch_count,
+        top_left,
+        top_right,
+        bottom_left,
+        bottom_right,
+        branch_tl,
+        branch_tr,
+        branch_bl,
+        branch_br,
+        pixel_count,
+    ]
+
+    hash_value = "".join(format(min(v, 15), "x") for v in values)
+    return hash_value
 
 
-# Add other custom hash function implementations here...
 def contour_hash(image: np.ndarray) -> str:
-    try:
-        if len(image.shape) > 2:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    """
+    Create a hash based on character contours.
+    Useful for comparing boundary shapes.
+    """
+
+    if len(image.shape) > 2:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+
+    _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        return "0" * 16
+
+    largest_contour = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(largest_contour)
+    perimeter = cv2.arcLength(largest_contour, True)
+
+    circularity = 0
+    if perimeter > 0:
+        circularity = 4 * np.pi * area / (perimeter * perimeter)
+
+    M = cv2.moments(largest_contour)
+    hu_moments = cv2.HuMoments(M).flatten()
+    normalized_moments = []
+    for moment in hu_moments:
+        if moment != 0:
+            normalized_moments.append(
+                min(15, int(-np.sign(moment) * np.log10(abs(moment)) * 1.5))
+            )
         else:
-            gray = image.copy()
-        if gray.size == 0:
-            return "contour_empty_input"
-        _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-        contours, _ = cv2.findContours(
-            binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        if not contours:
-            return "0" * 16
-        # ... (rest of contour_hash logic) ...
-        hash_value = "".join(format(int(v), "x") for v in hash_components[:16])
-        return hash_value.ljust(16, "0")
-    except Exception:
-        return "contour_error"
+            normalized_moments.append(0)
+
+    aspect_ratio = 0
+    if M["m00"] != 0:
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        aspect_ratio = float(w) / h if h > 0 else 0
+
+    normalized_moments = [min(15, max(0, m)) for m in normalized_moments]
+    hash_components = normalized_moments + [
+        int(circularity * 15),
+        int(aspect_ratio * 15),
+    ]
+
+    hash_value = "".join(format(int(v), "x") for v in hash_components[:16])
+    return hash_value
 
 
 def zoning_hash(image: np.ndarray) -> str:
-    try:
-        if len(image.shape) > 2:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = image.copy()
-        if gray.size == 0:
-            return "zoning_empty_input"
-        _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
-        # ... (rest of zoning_hash logic) ...
-        hash_value = "".join(format(d, "x") for d in densities)
-        return hash_value.ljust(16, "0")  # zones_y * zones_x = 16
-    except Exception:
-        return "zoning_error"
+    """
+    Create a hash based on zoning the character.
+    Divides the image into a grid and calculates pixel density in each zone.
+    """
 
+    if len(image.shape) > 2:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
 
-from skimage.morphology import thin
+    _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+
+    zones_y, zones_x = 4, 4
+    height, width = binary.shape
+    zone_height = height // zones_y
+    zone_width = width // zones_x
+    densities = []
+
+    for y in range(zones_y):
+        for x in range(zones_x):
+            y_start = y * zone_height
+            y_end = (y + 1) * zone_height if y < zones_y - 1 else height
+            x_start = x * zone_width
+            x_end = (x + 1) * zone_width if x < zones_x - 1 else width
+            zone = binary[y_start:y_end, x_start:x_end]
+            zone_size = (y_end - y_start) * (x_end - x_start)
+            if zone_size > 0:
+                density = np.sum(zone) / (zone_size * 255)
+                densities.append(min(15, int(density * 16)))
+            else:
+                densities.append(0)
+
+    hash_value = "".join(format(d, "x") for d in densities)
+    return hash_value
 
 
 def stroke_direction_hash(image: np.ndarray) -> str:
-    try:
-        if len(image.shape) > 2:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = image.copy()
-        if gray.size == 0:
-            return "stroke_empty_input"
-        # ... (rest of stroke_direction_hash logic) ...
-        bin_hash = "".join(format(b, "x") for b in normalized_bins)
-        ratio_hash = format(hv_ratio, "x") + format(diag_ratio, "x")
-        return (bin_hash + ratio_hash).ljust(10, "0")  # 8 bins + 2 ratios
-    except Exception:
-        return "stroke_error"
+    """
+    Create a hash based on stroke directions.
+    Detects dominant stroke directions in the character.
+    """
+    if len(image.shape) > 2:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+
+    gradient_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    gradient_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+
+    magnitude = cv2.magnitude(gradient_x, gradient_y)
+    direction = cv2.phase(gradient_x, gradient_y, angleInDegrees=True)
+
+    threshold = np.mean(magnitude) * 1.5
+    mask = magnitude > threshold
+
+    bins = 8
+    bin_size = 360 // bins
+    direction_bins = np.zeros(bins, dtype=int)
+
+    for i in range(direction.shape[0]):
+        for j in range(direction.shape[1]):
+            if mask[i, j]:
+                bin_idx = int(direction[i, j] // bin_size) % bins
+                direction_bins[bin_idx] += 1
+
+    total = np.sum(direction_bins)
+    if total > 0:
+        normalized_bins = (direction_bins / total * 15).astype(int)
+    else:
+        normalized_bins = np.zeros(bins, dtype=int)
+
+    horizontal_sum = direction_bins[0] + direction_bins[4]  # 0° and 180°
+    vertical_sum = direction_bins[2] + direction_bins[6]  # 90° and 270°
+
+    if vertical_sum > 0:
+        hv_ratio = min(15, int((horizontal_sum / vertical_sum) * 4))
+    else:
+        hv_ratio = 15
+
+    diagonal1_sum = direction_bins[1] + direction_bins[5]  # 45° and 225°
+    diagonal2_sum = direction_bins[3] + direction_bins[7]  # 135° and 315°
+
+    if diagonal2_sum > 0:
+        diag_ratio = min(15, int((diagonal1_sum / diagonal2_sum) * 4))
+    else:
+        diag_ratio = 15
+
+    bin_hash = "".join(format(b, "x") for b in normalized_bins)
+    ratio_hash = format(hv_ratio, "x") + format(diag_ratio, "x")
+
+    return bin_hash + ratio_hash
 
 
 def junction_hash(image: np.ndarray) -> str:
-    try:
-        if len(image.shape) > 2:
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = image.copy()
-        if gray.size == 0:
-            return "junction_empty_input"
-        _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
-        binary = binary.astype(bool)
-        if not np.any(binary):
-            return "0" * 16  # Handle empty binary image
-        thinned = thin(binary)
-        # ... (rest of junction_hash logic) ...
-        hash_value = "".join(format(f, "x") for f in features)
-        return hash_value.ljust(16, "0")  # 4 totals + 3*4 distributions
-    except Exception:
-        return "junction_error"
+    """
+    Create a hash based on junction analysis.
+    Detects and categorizes junction points in the character.
+    """
+    if len(image.shape) > 2:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image.copy()
+
+    _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+    binary = binary.astype(bool)
+    thinned = thin(binary)
+    skeleton_img = thinned.astype(np.uint8) * 255
+
+    def count_neighbors(img, y, x):
+        n_count = 0
+        neighbors_pos = []
+        for i in range(max(0, y - 1), min(img.shape[0], y + 2)):
+            for j in range(max(0, x - 1), min(img.shape[1], x + 2)):
+                if (i != y or j != x) and img[i, j]:
+                    n_count += 1
+                    neighbors_pos.append((i, j))
+        return n_count, neighbors_pos
+
+    endpoints = []  # 1 neighbor
+    continuation = []  # 2 neighbors
+    t_junctions = []  # 3 neighbors
+    x_junctions = []  # 4+ neighbors
+
+    for y in range(skeleton_img.shape[0]):
+        for x in range(skeleton_img.shape[1]):
+            if skeleton_img[y, x]:
+                n_count, _ = count_neighbors(skeleton_img, y, x)
+                if n_count == 1:
+                    endpoints.append((y, x))
+                elif n_count == 2:
+                    continuation.append((y, x))
+                elif n_count == 3:
+                    t_junctions.append((y, x))
+                elif n_count >= 4:
+                    x_junctions.append((y, x))
+
+    height, width = skeleton_img.shape
+
+    quadrants = [
+        [(0, 0), (height // 2, width // 2)],  # Top-left
+        [(0, width // 2), (height // 2, width)],  # Top-right
+        [(height // 2, 0), (height, width // 2)],  # Bottom-left
+        [(height // 2, width // 2), (height, width)],  # Bottom-right
+    ]
+
+    endpoint_dist = [0, 0, 0, 0]
+    t_junction_dist = [0, 0, 0, 0]
+    x_junction_dist = [0, 0, 0, 0]
+
+    for i, ((y1, x1), (y2, x2)) in enumerate(quadrants):
+        for y, x in endpoints:
+            if y1 <= y < y2 and x1 <= x < x2:
+                endpoint_dist[i] += 1
+
+        for y, x in t_junctions:
+            if y1 <= y < y2 and x1 <= x < x2:
+                t_junction_dist[i] += 1
+
+        for y, x in x_junctions:
+            if y1 <= y < y2 and x1 <= x < x2:
+                x_junction_dist[i] += 1
+
+    total_endpoints = len(endpoints)
+    total_t_junctions = len(t_junctions)
+    total_x_junctions = len(x_junctions)
+    total_continuation = len(continuation)
+
+    features = [
+        min(15, total_endpoints),
+        min(15, total_t_junctions),
+        min(15, total_x_junctions),
+        min(15, total_continuation // 16),
+    ] + [min(15, v) for v in endpoint_dist + t_junction_dist + x_junction_dist]
+
+    hash_value = "".join(format(f, "x") for f in features)
+    return hash_value
 
 
-# --- OpenCV Hashes ---
-CV2_HASH_FUNCTIONS: Dict[str, Callable[[np.ndarray], np.ndarray]] = {
-    # Check availability at runtime
-}
+CV2_HASH_FUNCTIONS: Dict[str, Callable[[np.ndarray], np.ndarray]] = {}
 try:
     CV2_HASH_FUNCTIONS["Average"] = cv2.img_hash.AverageHash_create().compute
     CV2_HASH_FUNCTIONS["BlockMean"] = cv2.img_hash.BlockMeanHash_create().compute
@@ -298,15 +478,11 @@ except AttributeError:
         file=sys.stderr,
     )
 
-
-# --- Other Hashing Libraries ---
 IMAGEHASH_FUNCTIONS: Dict[str, HashFunctionType] = {
     "dhash": dhash,
     "wavelet": wavelet_hash,
 }
 
-# --- Custom Hash Functions ---
-# Assume grayscale input unless otherwise specified
 CUSTOM_HASH_FUNCTIONS_GRAY: Dict[str, HashFunctionType] = {
     "sift": sift_hash,
     "surf": surf_hash,
@@ -322,22 +498,18 @@ CUSTOM_HASH_FUNCTIONS_GRAY: Dict[str, HashFunctionType] = {
     "junction": junction_hash,
 }
 
-# Assume color input
 CUSTOM_HASH_FUNCTIONS_COLOR: Dict[str, HashFunctionType] = {
     "histogram": histogram_hash,
-    "gabor": gabor_hash,  # Gabor can work on color or gray, here defined for color
+    "gabor": gabor_hash,
 }
 
-
-# --- Hash Categories ---
-# Define sets for easier selection
 CV2_HASH_NAMES: Set[str] = set(CV2_HASH_FUNCTIONS.keys())
 IMAGEHASH_NAMES: Set[str] = set(IMAGEHASH_FUNCTIONS.keys())
 CUSTOM_GRAY_NAMES: Set[str] = set(CUSTOM_HASH_FUNCTIONS_GRAY.keys())
 CUSTOM_COLOR_NAMES: Set[str] = set(CUSTOM_HASH_FUNCTIONS_COLOR.keys())
 
 PERCEPTUAL_HASHES: Set[str] = {"Average", "BlockMean", "PHash", "dhash", "wavelet"}
-FEATURE_HASHES: Set[str] = {"sift", "surf", "orb"}  # Keypoint-based
+FEATURE_HASHES: Set[str] = {"sift", "surf", "orb"}
 TEXTURE_HASHES: Set[str] = {"gabor", "tamura"}
 STRUCTURAL_HASHES: Set[str] = {
     "MarrHildreth",
@@ -356,7 +528,6 @@ ALL_HASHES: Set[str] = (
     CV2_HASH_NAMES | IMAGEHASH_NAMES | CUSTOM_GRAY_NAMES | CUSTOM_COLOR_NAMES
 )
 
-# Map category names to sets
 HASH_CATEGORIES: Dict[str, Set[str]] = {
     "all": ALL_HASHES,
     "none": set(),
@@ -370,7 +541,6 @@ HASH_CATEGORIES: Dict[str, Set[str]] = {
     "structural": STRUCTURAL_HASHES,
     "color": COLOR_HASHES,
     "other": OTHER_HASHES,
-    # Add combinations if needed, e.g., "basic": PERCEPTUAL_HASHES | {"histogram"}
     "basic": PERCEPTUAL_HASHES | {"histogram", "zoning"},
 }
 
@@ -381,7 +551,7 @@ def get_selected_hashes(specifier: str) -> Set[str]:
     and returns the set of selected hash names.
     """
     if not specifier:
-        return HASH_CATEGORIES["basic"]  # Default to basic if empty
+        return HASH_CATEGORIES["basic"]
 
     selected_hashes = set()
     parts = specifier.lower().split(",")
@@ -410,8 +580,6 @@ def get_selected_hashes(specifier: str) -> Set[str]:
                     file=sys.stderr,
                 )
 
-    # Handle the case where only exclusions were provided (e.g., "--hashes -sift")
-    # This implies starting from 'all' and removing the exclusions.
     if all(p.startswith("-") for p in parts if p) and not any(
         p for p in parts if not p.startswith("-")
     ):
@@ -427,14 +595,7 @@ def get_selected_hashes(specifier: str) -> Set[str]:
                 initial_set.discard(exclude_part)
         return initial_set
 
-    # If only 'none' is specified
     if "none" in [p.strip() for p in parts] and len(parts) == 1:
         return set()
 
     return selected_hashes
-
-
-# Example Usage:
-# selected = get_selected_hashes("basic,-dhash,sift")
-# selected = get_selected_hashes("all,-feature")
-# selected = get_selected_hashes("none")
