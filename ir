@@ -104,13 +104,13 @@ def _add_metadata(
             create_element(res_elem, "dpi_average", text=f"{avg_dpi:.1f}")
             est_w_mm = (width / avg_dpi) * MM_PER_INCH if avg_dpi > 0 else 0
             est_h_mm = (height / avg_dpi) * MM_PER_INCH if avg_dpi > 0 else 0
-            create_element(
+            est_size_elem = create_element(
                 size_elem,
                 "estimated_size_mm",
                 attrib={"based_on": f"average estimated dpi ({avg_dpi:.1f})"},
             )
-            create_element(size_elem, "width_mm", text=f"{est_w_mm:.1f}")
-            create_element(size_elem, "height_mm", text=f"{est_h_mm:.1f}")
+            create_element(est_size_elem, "width_mm", text=f"{est_w_mm:.1f}")
+            create_element(est_size_elem, "height_mm", text=f"{est_h_mm:.1f}")
 
     else:
         create_element(size_elem, "message", text="Could not guess paper size.")
