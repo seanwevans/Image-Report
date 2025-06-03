@@ -17,8 +17,8 @@ logger.setLevel(logging.DEBUG)
 PROG = "ir"
 VERSION = "1.3.0"
 
-DEFAULT_NMS_THRESHOLD = 0
-DEFAULT_DPI = 300
+DEFAULT_NMS_THRESHOLD = 0.3
+DEFAULT_DPI = 600
 SUPPORTED_IMAGE_FORMATS = [
     "avif",
     "bmp",
