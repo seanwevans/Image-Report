@@ -10,6 +10,8 @@ from PIL import Image
 from skimage.morphology import skeletonize
 from skimage.morphology import thin
 
+from utils import logger
+
 ImageType = Union[np.ndarray, Image.Image]
 HashFunctionType = Callable[[ImageType], str]
 
@@ -473,9 +475,8 @@ try:
         "RadialVariance"
     ] = cv2.img_hash.RadialVarianceHash_create().compute
 except AttributeError:
-    print(
-        "Warning: Some or all cv2.img_hash functions not found. Check OpenCV installation.",
-        file=sys.stderr,
+    logger.warning(
+        "Warning: Some or all cv2.img_hash functions not found. Check OpenCV installation."
     )
 
 IMAGEHASH_FUNCTIONS: Dict[str, HashFunctionType] = {
@@ -528,6 +529,9 @@ ALL_HASHES: Set[str] = (
     CV2_HASH_NAMES | IMAGEHASH_NAMES | CUSTOM_GRAY_NAMES | CUSTOM_COLOR_NAMES
 )
 
+# Mapping of lowercase hash names to their canonical forms
+HASH_NAME_LOOKUP: Dict[str, str] = {name.lower(): name for name in ALL_HASHES}
+
 HASH_CATEGORIES: Dict[str, Set[str]] = {
     "all": ALL_HASHES,
     "none": set(),
@@ -554,48 +558,49 @@ def get_selected_hashes(specifier: str) -> Set[str]:
         return HASH_CATEGORIES["basic"]
 
     selected_hashes = set()
-    parts = specifier.lower().split(",")
+    parts = specifier.split(",")
+    clean_parts = [p.strip() for p in parts]
 
-    for part in parts:
-        part = part.strip()
+    for part in clean_parts:
         if not part:
             continue
 
         if part.startswith("-"):
             # Exclusion
             exclude_part = part[1:]
-            if exclude_part in HASH_CATEGORIES:
-                selected_hashes -= HASH_CATEGORIES[exclude_part]
-            elif exclude_part in ALL_HASHES:
-                selected_hashes.discard(exclude_part)
+            key = exclude_part.lower()
+            if key in HASH_CATEGORIES:
+                selected_hashes -= HASH_CATEGORIES[key]
+            elif key in HASH_NAME_LOOKUP:
+                selected_hashes.discard(HASH_NAME_LOOKUP[key])
         else:
             # Inclusion
-            if part in HASH_CATEGORIES:
-                selected_hashes.update(HASH_CATEGORIES[part])
-            elif part in ALL_HASHES:
-                selected_hashes.add(part)
+            key = part.lower()
+            if key in HASH_CATEGORIES:
+                selected_hashes.update(HASH_CATEGORIES[key])
+            elif key in HASH_NAME_LOOKUP:
+                selected_hashes.add(HASH_NAME_LOOKUP[key])
             else:
-                print(
-                    f"Warning: Unknown hash or category '{part}' ignored.",
-                    file=sys.stderr,
+                logger.warning(
+                    "Warning: Unknown hash or category '%s' ignored.", part
                 )
 
-    if all(p.startswith("-") for p in parts if p) and not any(
-        p for p in parts if not p.startswith("-")
+    if all(p.startswith("-") for p in clean_parts if p) and not any(
+        p for p in clean_parts if not p.startswith("-")
     ):
         initial_set = ALL_HASHES.copy()
-        for part in parts:
-            part = part.strip()
+        for part in clean_parts:
             if not part:
                 continue
             exclude_part = part[1:]
-            if exclude_part in HASH_CATEGORIES:
-                initial_set -= HASH_CATEGORIES[exclude_part]
-            elif exclude_part in ALL_HASHES:
-                initial_set.discard(exclude_part)
+            key = exclude_part.lower()
+            if key in HASH_CATEGORIES:
+                initial_set -= HASH_CATEGORIES[key]
+            elif key in HASH_NAME_LOOKUP:
+                initial_set.discard(HASH_NAME_LOOKUP[key])
         return initial_set
 
-    if "none" in [p.strip() for p in parts] and len(parts) == 1:
+    if "none" in [p.lower() for p in clean_parts] and len(clean_parts) == 1:
         return set()
 
     return selected_hashes
