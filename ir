@@ -3,7 +3,7 @@
 """ir - Generate an XML report with metadata and features of an image."""
 
 import asyncio
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 import logging
 from pathlib import Path
 import sys
@@ -14,7 +14,6 @@ import cv2
 import numpy as np
 from lxml import etree
 from PIL import Image
-import aiofiles
 
 from utils import (
     PROG,
