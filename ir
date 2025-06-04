@@ -456,7 +456,7 @@ async def process_batch_async(
 
     success_count = 0
     failure_count = 0
-    tasks = []
+    tasks: Dict[asyncio.Future, Path] = {}
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         loop = asyncio.get_running_loop()
 
@@ -471,10 +471,10 @@ async def process_batch_async(
                 nms_threshold,
                 default_dpi,
             )
-            tasks.append(future)
+            tasks[future] = image_path
 
-        for i, future in enumerate(asyncio.as_completed(tasks)):
-            image_path = image_paths[i]
+        for future in asyncio.as_completed(tasks):
+            image_path = tasks[future]
             try:
                 result_ok = await future
                 if result_ok:
