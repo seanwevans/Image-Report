@@ -186,6 +186,25 @@ The tool generates XML reports with the following structure:
 - `papersize.py` - Paper size definitions and guessing logic
 - `requirements.txt` - Package dependencies
 
+## Extract Average Hash Utility
+
+The repository contains a minimal C helper `extract_average_hash.c` for
+extracting the `<average_hash>` value from an XML report. Compile it
+with:
+
+```bash
+gcc extract_average_hash.c -o extract_average_hash
+```
+
+Run the resulting binary by specifying the XML file, the byte offset of
+the hash and the number of characters to read:
+
+```bash
+./extract_average_hash report.xml OFFSET NUM_CHARS
+```
+
+The program prints the requested hash substring to standard output.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
