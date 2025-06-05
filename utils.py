@@ -129,7 +129,7 @@ def parse_args(args: List[str]) -> argparse.Namespace:
         default=None,
         help="Path to optional log file. If not specified, logging only goes to console."
         " If input is a directory, consider setting this explicitly."
-        " Default name in single file mode is <input_name>.ir",
+        " Default name in single file mode is <input_name>.ir.log",
     )
     log_group.add_argument(
         "--log-level-file",
@@ -167,7 +167,7 @@ def parse_args(args: List[str]) -> argparse.Namespace:
     parsed_args = argp.parse_args(args)
 
     if not parsed_args.input_path.is_dir() and parsed_args.log_file is None:
-        parsed_args.log_file = parsed_args.input_path.with_suffix(".ir")
+        parsed_args.log_file = parsed_args.input_path.with_suffix(".ir.log")
 
     if parsed_args.quiet:
         parsed_args.log_level_console = "WARNING"
