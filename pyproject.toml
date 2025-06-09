@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "image-report"
+version = "0.1.0"
+description = "Generate XML image analysis reports"
+readme = "README.md"
+requires-python = ">=3.7"
+dependencies = [
+    "numpy>=1.20.0",
+    "opencv-contrib-python>=4.5.0",
+    "lxml>=4.6.0",
+    "Pillow>=8.0.0",
+    "imagehash>=4.2.0",
+    "scikit-image>=0.18.0",
+]
+
+[project.scripts]
+ir = "ir:main"
+
+[tool.setuptools]
+py-modules = ["analysis", "hashing_config", "papersize", "utils", "ir"]
