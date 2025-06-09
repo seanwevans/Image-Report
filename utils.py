@@ -48,7 +48,15 @@ def setup_logging(
     log_level_file: int = logging.DEBUG,
     log_file: Optional[Union[str, Path]] = None,
 ) -> None:
-    """Initializes logging handlers and format."""
+    """Initializes logging handlers and format.
+
+    Existing handlers are removed so the function can be safely invoked
+    multiple times without duplicating log output.
+    """
+
+    # Remove existing handlers to avoid duplicate logs when called repeatedly
+    if logger.hasHandlers():
+        logger.handlers.clear()
 
     log_format = logging.Formatter("%(asctime)-23s [%(levelname)8s] %(message)s")
 
