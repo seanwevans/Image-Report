@@ -93,7 +93,7 @@ def parse_args(args: List[str]) -> argparse.Namespace:
     proc_group.add_argument(
         "--hashes",
         type=str,
-        default="all",
+        default="basic",
         help="Specify which hashes to compute. Examples: "
         "'all', 'none', 'basic', 'perceptual', 'feature', 'sift,dhash', 'basic,-dhash'. "
         f"Categories: {', '.join(HASH_CATEGORIES.keys())}. Prefix with '-' to exclude.",
