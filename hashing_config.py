@@ -2,7 +2,6 @@
 
 import cv2
 import imagehash
-import sys
 from typing import Set, Dict, Callable, Union, List, Optional
 import numpy as np
 from PIL import Image
