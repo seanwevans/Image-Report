@@ -89,8 +89,9 @@ Processing Options:
                         structural, color, other, basic. Prefix with '-' to
                         exclude. (default: basic)
   --nms-threshold NMS_THRESHOLD
-                        Overlap threshold (0.0-1.0) for Non-Maximum Suppression of
-                        bounding boxes. (default: 0.3)
+                        Overlap threshold for Non-Maximum Suppression of
+                        bounding boxes. Must be between 0.0 and 1.0.
+                        (default: 0.3)
   --default-dpi DEFAULT_DPI
                         Assumed DPI for paper size guessing if resolution info is
                         missing. (default: 600)

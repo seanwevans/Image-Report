@@ -17,6 +17,7 @@ def find_bounding_boxes(
     Args:
         image: Input image (BGR format).
         nms_overlap_thresh: IoU threshold for suppressing overlapping boxes.
+            Must be between 0.0 and 1.0.
 
     Returns:
         Numpy array of bounding boxes [[x1, y1, x2, y2], ...], sorted by top-left corner.
