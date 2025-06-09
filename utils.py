@@ -43,6 +43,18 @@ SUPPORTED_IMAGE_FORMATS = [
 ]
 
 
+def float_0_1(value: str) -> float:
+    """Argparse type for floats restricted to the [0.0, 1.0] range."""
+    try:
+        fval = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a valid float") from exc
+
+    if 0.0 <= fval <= 1.0:
+        return fval
+    raise argparse.ArgumentTypeError("value must be between 0.0 and 1.0")
+
+
 def setup_logging(
     log_level_stream: int = logging.INFO,
     log_level_file: int = logging.DEBUG,
@@ -100,9 +112,12 @@ def parse_args(args: List[str]) -> argparse.Namespace:
     )
     proc_group.add_argument(
         "--nms-threshold",
-        type=float,
+        type=float_0_1,
         default=DEFAULT_NMS_THRESHOLD,
-        help="Overlap threshold (0.0-1.0) for Non-Maximum Suppression of bounding boxes.",
+        help=(
+            "Overlap threshold for Non-Maximum Suppression of bounding boxes. "
+            "Must be between 0.0 and 1.0."
+        ),
     )
     proc_group.add_argument(
         "--default-dpi",
@@ -204,6 +219,7 @@ def create_element(
 def non_max_suppression(boxes: np.ndarray, overlap_thresh: float) -> np.ndarray:
     """
     Condenses overlapping bounding boxes based on overlap threshold (IoU).
+    ``overlap_thresh`` must be between 0.0 and 1.0.
     Input boxes: numpy array of shape (N, 4) with format [x1, y1, x2, y2].
     Returns: numpy array of shape (M, 4) with suppressed boxes.
     """
