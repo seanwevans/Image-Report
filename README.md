@@ -50,14 +50,9 @@ The tool is designed to be efficient and flexible, with support for processing i
    cd ir
    ```
 
-2. Install dependencies:
+2. Install the package using pip (dependencies will be installed automatically):
    ```
-   pip install -r requirements.txt
-   ```
-
-3. Make the script executable (Linux/Mac):
-   ```
-   chmod +x ir
+   pip install .
    ```
 
 ## Usage
@@ -66,12 +61,12 @@ The tool is designed to be efficient and flexible, with support for processing i
 
 Process a single image:
 ```
-./ir input.jpg output.xml
+ir input.jpg output.xml
 ```
 
 Process all images in a directory:
 ```
-./ir input_directory/ output_directory/
+ir input_directory/ output_directory/
 ```
 
 ### Command Line Options
@@ -121,17 +116,17 @@ Help and Version:
 
 Calculate only perceptual hashes:
 ```
-./ir input.jpg output.xml --hashes perceptual
+ir input.jpg output.xml --hashes perceptual
 ```
 
 Process all images in a directory with custom settings:
 ```
-./ir input_dir/ output_dir/ --hashes all,-feature --nms-threshold 0.4 --default-dpi 300 --continue-on-error
+ir input_dir/ output_dir/ --hashes all,-feature --nms-threshold 0.4 --default-dpi 300 --continue-on-error
 ```
 
 Verbose output with debug logging:
 ```
-./ir input.jpg output.xml --log-level-console DEBUG
+ir input.jpg output.xml --log-level-console DEBUG
 ```
 
 ## Hash Selection
