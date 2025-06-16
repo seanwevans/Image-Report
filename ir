@@ -316,7 +316,8 @@ def generate_report_xml(
         input_path: Path to the source image file.
         img_color: Image loaded in BGR format (NumPy array).
         selected_hashes: Set of hash names to compute.
-        nms_threshold: Overlap threshold for bounding box NMS.
+        nms_threshold: Overlap threshold for bounding box NMS. Must be between
+            0.0 and 1.0.
         default_dpi: Assumed DPI for paper size guessing.
 
     Returns:
