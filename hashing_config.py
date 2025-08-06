@@ -9,7 +9,9 @@ from PIL import Image
 from skimage.morphology import skeletonize
 from skimage.morphology import thin
 
-from utils import logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 ImageType = Union[np.ndarray, Image.Image]
 HashFunctionType = Callable[[ImageType], str]

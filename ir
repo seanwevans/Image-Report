@@ -19,7 +19,6 @@ from utils import (
     PROG,
     VERSION,
     SUPPORTED_IMAGE_FORMATS,
-    logger,
     setup_logging,
     parse_args,
     create_element,
@@ -35,6 +34,7 @@ from hashing_config import (
 from papersize import STANDARD_SIZES_MM, guess_paper_size, guess_dpi, MM_PER_INCH
 from analysis import find_bounding_boxes, calculate_spectral_analysis
 
+logger = logging.getLogger(__name__)
 
 def _add_metadata(
     parent: etree._Element,
