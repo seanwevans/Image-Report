@@ -7,6 +7,7 @@ from concurrent.futures import ProcessPoolExecutor
 import logging
 from pathlib import Path
 import sys
+import os
 from typing import List, Dict, Optional, Tuple, Set, Union
 import time
 
@@ -457,22 +458,28 @@ async def process_batch_async(
 
     success_count = 0
     failure_count = 0
-    tasks: Dict[asyncio.Future, Path] = {}
+    tasks: Dict[asyncio.Task, Path] = {}
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         loop = asyncio.get_running_loop()
+        max_concurrent = max_workers or (os.cpu_count() or 1)
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def run_image(image_path: Path) -> bool:
+            output_path = output_dir / f"{image_path.stem}.ir.xml"
+            async with semaphore:
+                return await loop.run_in_executor(
+                    pool,
+                    process_single_image,
+                    image_path,
+                    output_path,
+                    selected_hashes,
+                    nms_threshold,
+                    default_dpi,
+                )
 
         for image_path in image_paths:
-            output_path = output_dir / f"{image_path.stem}.ir.xml"
-            future = loop.run_in_executor(
-                pool,
-                process_single_image,
-                image_path,
-                output_path,
-                selected_hashes,
-                nms_threshold,
-                default_dpi,
-            )
-            tasks[future] = image_path
+            task = asyncio.create_task(run_image(image_path))
+            tasks[task] = image_path
 
         for future in asyncio.as_completed(tasks):
             image_path = tasks[future]
