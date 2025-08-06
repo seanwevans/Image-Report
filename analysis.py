@@ -101,9 +101,11 @@ def calculate_spectral_analysis(image: np.ndarray) -> Optional[Dict[str, List[in
             gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
         )
         height, width = thresholded.shape
-        vertical_counts = [cv2.countNonZero(thresholded[:, i]) for i in range(width)]
-        horizontal_counts = [cv2.countNonZero(thresholded[i, :]) for i in range(height)]
-        logger.debug("Spectral analysis complete: %d rows, %d columns.", height, width)
+        horizontal_counts = np.count_nonzero(thresholded, axis=1).tolist()
+        vertical_counts = np.count_nonzero(thresholded, axis=0).tolist()
+        logger.debug(
+            "Spectral analysis complete: %d rows, %d columns.", height, width
+        )
 
         return {"horizontal": horizontal_counts, "vertical": vertical_counts}
 
