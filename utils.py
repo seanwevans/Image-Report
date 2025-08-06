@@ -66,16 +66,18 @@ def setup_logging(
     multiple times without duplicating log output.
     """
 
-    # Remove existing handlers to avoid duplicate logs when called repeatedly
-    if logger.hasHandlers():
-        logger.handlers.clear()
+    root_logger = logging.getLogger()
+    if root_logger.hasHandlers():
+        root_logger.handlers.clear()
+
+    root_logger.setLevel(logging.DEBUG)
 
     log_format = logging.Formatter("%(asctime)-23s [%(levelname)8s] %(message)s")
 
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(log_format)
     stream_handler.setLevel(log_level_stream)
-    logger.addHandler(stream_handler)
+    root_logger.addHandler(stream_handler)
 
     if log_file:
         log_path = Path(log_file)
@@ -83,7 +85,7 @@ def setup_logging(
         file_handler = logging.FileHandler(log_path, encoding="UTF-8", mode="a")
         file_handler.setFormatter(log_format)
         file_handler.setLevel(log_level_file)
-        logger.addHandler(file_handler)
+        root_logger.addHandler(file_handler)
 
 
 def parse_args(args: List[str]) -> argparse.Namespace:

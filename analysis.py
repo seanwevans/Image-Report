@@ -4,7 +4,10 @@ import cv2
 import numpy as np
 from typing import List, Dict, Optional
 
-from utils import logger, non_max_suppression
+import logging
+from utils import non_max_suppression
+
+logger = logging.getLogger(__name__)
 
 
 def find_bounding_boxes(

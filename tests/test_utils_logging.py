@@ -1,12 +1,15 @@
 import logging
-from utils import logger, setup_logging
+from utils import setup_logging
+
+logger = logging.getLogger(__name__)
 
 
 def test_setup_logging_clears_handlers(tmp_path):
-    logger.handlers.clear()
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
     log_file = tmp_path / "log.txt"
     setup_logging(log_file=log_file)
-    first = len(logger.handlers)
+    first = len(root_logger.handlers)
     setup_logging(log_file=log_file)
-    second = len(logger.handlers)
+    second = len(root_logger.handlers)
     assert first == second == 2
