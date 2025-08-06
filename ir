@@ -377,9 +377,7 @@ def process_single_image(
         "Processing image: %s -> %s", image_path.resolve(), output_path.resolve()
     )
     try:
-        with open(image_path, "rb") as f:
-            img_bytes = np.frombuffer(f.read(), np.uint8)
-            img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
+        img = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
 
         if img is None:
             logger.error("Failed to load image file: %s", image_path)
