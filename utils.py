@@ -232,6 +232,9 @@ def non_max_suppression(boxes: np.ndarray, overlap_thresh: float) -> np.ndarray:
     Returns: numpy array of shape (M, 4) with suppressed boxes.
     """
 
+    if not 0.0 <= overlap_thresh <= 1.0:
+        raise ValueError("overlap_thresh must be between 0.0 and 1.0")
+
     if not isinstance(boxes, np.ndarray):
         boxes = np.array(boxes)
 
