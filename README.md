@@ -1,4 +1,5 @@
 # IR (Image Reporter)
+<img width="256" alt="beep boop beep boop" src="https://github.com/user-attachments/assets/b23ff849-cb10-4620-bddb-098f365f5f3d" />
 
 A versatile image analysis tool for generating detailed XML reports from images.
 
