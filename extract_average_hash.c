@@ -4,18 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define C1 (errno == ERANGE && (offset == LONG_MAX || offset == LONG_MIN))
-#define C2 (errno != 0 && offset == 0)
-#define C3                                                                     \
-  (errno != 0 || *end != '\0' || end == argv[2] || offset < 0 ||               \
-   offset >= filesize)
-
-#define D1 (errno == ERANGE && (num_chars == LONG_MAX || num_chars == LONG_MIN))
-#define D2 (errno != 0 && num_chars == 0)
-#define D3                                                                     \
-  (errno != 0 || *end != '\0' || end == argv[3] || num_chars <= 0 ||           \
-   num_chars + offset > filesize)
-
 typedef enum {
   USAGE_MSG = 1,
   FILE_OPEN_ERROR,
@@ -44,17 +32,22 @@ const char *error_message[] = {
     "Failed to seek to offset",
     "Failed to read input data",
     "Failed to write output",
-    "Failed to close input file"};
+    "Failed to close input file"
+};
 
 FILE *file = NULL;
 char *data = NULL;
 
 void stop(ErrorCode error_code) {
-  if (data)
+  if (data) {
     free(data);
+    data = NULL;
+  }
 
-  if (file)
+  if (file) {
     fclose(file);
+    file = NULL;
+  }
 
   if (error_code > 1)
     fprintf(stderr, "Error: ");
@@ -65,12 +58,11 @@ void stop(ErrorCode error_code) {
 }
 
 int main(int argc, char *argv[]) {
-  size_t filesize = 0;
+  long filesize = 0; 
   long offset = 0;
   long num_chars = 0;
   char *end = NULL;
 
-  errno = 0;
   if (argc < 4)
     stop(USAGE_MSG);
 
@@ -80,7 +72,7 @@ int main(int argc, char *argv[]) {
 
   if (fseek(file, 0, SEEK_END) != 0)
     stop(FILE_SIZE_ERROR);
-
+  
   filesize = ftell(file);
   if (filesize <= 0)
     stop(FILE_VALIDATION_ERROR);
@@ -90,32 +82,37 @@ int main(int argc, char *argv[]) {
 
   errno = 0;
   offset = strtol(argv[2], &end, 10);
-  if (C1 || C2 || C3)
+  if (errno != 0 || end == argv[2] || *end != '\0' || offset < 0 || offset >= filesize)
     stop(OFFSET_ERROR);
 
   errno = 0;
   num_chars = strtol(argv[3], &end, 10);
-  if (D1 || D2 || D3)
-    stop(NUM_CHARS_ERROR);
 
-  data = calloc(num_chars + 1, 1);
+  if (errno != 0 || end == argv[3] || *end != '\0' || num_chars <= 0 || num_chars > filesize - offset)
+    stop(NUM_CHARS_ERROR);
+  
+  data = calloc((size_t)num_chars + 1, 1);
   if (!data)
     stop(MEMORY_ALLOC_ERROR);
 
   if (fseek(file, offset, SEEK_SET) != 0)
     stop(OFFSET_SEEK_ERROR);
 
-  if (fread(data, 1, num_chars, file) != num_chars)
+  if (fread(data, 1, (size_t)num_chars, file) != (size_t)num_chars)
     stop(DATA_READ_ERROR);
+  
   data[num_chars] = '\0';
 
   if (puts(data) == EOF)
     stop(DATA_WRITE_ERROR);
 
-  if (fclose(file) != 0)
+  FILE *temp_file = file;
+  file = NULL; 
+  if (fclose(temp_file) != 0)
     stop(FILE_CLOSE_ERROR);
 
   free(data);
+  data = NULL;
 
   return EXIT_SUCCESS;
 }
