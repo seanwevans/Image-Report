@@ -32,8 +32,7 @@ const char *error_message[] = {
     "Failed to seek to offset",
     "Failed to read input data",
     "Failed to write output",
-    "Failed to close input file"
-};
+    "Failed to close input file"};
 
 FILE *file = NULL;
 char *data = NULL;
@@ -58,7 +57,7 @@ void stop(ErrorCode error_code) {
 }
 
 int main(int argc, char *argv[]) {
-  long filesize = 0; 
+  long filesize = 0;
   long offset = 0;
   long num_chars = 0;
   char *end = NULL;
@@ -72,7 +71,7 @@ int main(int argc, char *argv[]) {
 
   if (fseek(file, 0, SEEK_END) != 0)
     stop(FILE_SIZE_ERROR);
-  
+
   filesize = ftell(file);
   if (filesize <= 0)
     stop(FILE_VALIDATION_ERROR);
@@ -82,15 +81,17 @@ int main(int argc, char *argv[]) {
 
   errno = 0;
   offset = strtol(argv[2], &end, 10);
-  if (errno != 0 || end == argv[2] || *end != '\0' || offset < 0 || offset >= filesize)
+  if (errno != 0 || end == argv[2] || *end != '\0' || offset < 0 ||
+      offset >= filesize)
     stop(OFFSET_ERROR);
 
   errno = 0;
   num_chars = strtol(argv[3], &end, 10);
 
-  if (errno != 0 || end == argv[3] || *end != '\0' || num_chars <= 0 || num_chars > filesize - offset)
+  if (errno != 0 || end == argv[3] || *end != '\0' || num_chars <= 0 ||
+      num_chars > filesize - offset)
     stop(NUM_CHARS_ERROR);
-  
+
   data = calloc((size_t)num_chars + 1, 1);
   if (!data)
     stop(MEMORY_ALLOC_ERROR);
@@ -100,14 +101,14 @@ int main(int argc, char *argv[]) {
 
   if (fread(data, 1, (size_t)num_chars, file) != (size_t)num_chars)
     stop(DATA_READ_ERROR);
-  
+
   data[num_chars] = '\0';
 
   if (puts(data) == EOF)
     stop(DATA_WRITE_ERROR);
 
   FILE *temp_file = file;
-  file = NULL; 
+  file = NULL;
   if (fclose(temp_file) != 0)
     stop(FILE_CLOSE_ERROR);
 
