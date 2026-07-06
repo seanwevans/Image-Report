@@ -17,6 +17,27 @@ ImageType = Union[np.ndarray, Image.Image]
 HashFunctionType = Callable[[ImageType], str]
 
 
+def _neighbor_count(binary: np.ndarray) -> np.ndarray:
+    """
+    Count the number of 8-connected foreground neighbours of every pixel.
+
+    ``binary`` is treated as foreground wherever it is non-zero. Out-of-bounds
+    neighbours count as background (zero padding), matching a bounds-clamped
+    per-pixel scan. Returns an int32 array of neighbour counts (0-8), same shape
+    as the input.
+
+    This is the vectorised equivalent of a nested per-pixel loop: a single
+    3x3 box filter gives the neighbourhood sum, and subtracting the centre
+    leaves the neighbour count.
+    """
+    foreground = (binary != 0).astype(np.float32)
+    kernel = np.ones((3, 3), dtype=np.float32)
+    neighbourhood_sum = cv2.filter2D(
+        foreground, cv2.CV_32F, kernel, borderType=cv2.BORDER_CONSTANT
+    )
+    return np.rint(neighbourhood_sum - foreground).astype(np.int32)
+
+
 def feature_to_hash(descriptors: Optional[np.ndarray]) -> str:
     """Quantize descriptors and convert to a hexadecimal digest"""
 
@@ -176,46 +197,35 @@ def skeleton_hash(image: np.ndarray) -> str:
     skeleton = skeletonize(binary)
     skeleton_img = skeleton.astype(np.uint8) * 255
 
-    def neighbors(pos, img):
-        y, x = pos
-        n_count = 0
-        for i in range(max(0, y - 1), min(img.shape[0], y + 2)):
-            for j in range(max(0, x - 1), min(img.shape[1], x + 2)):
-                if (i != y or j != x) and img[i, j]:
-                    n_count += 1
-        return n_count
+    neighbor_count = _neighbor_count(skeleton_img)
+    ys, xs = np.where(skeleton_img)
+    counts = neighbor_count[ys, xs]
 
-    endpoints = []
-    branchpoints = []
-    for y in range(skeleton_img.shape[0]):
-        for x in range(skeleton_img.shape[1]):
-            if skeleton_img[y, x]:
-                n = neighbors((y, x), skeleton_img)
-                if n == 1:
-                    endpoints.append((y, x))
-                elif n > 2:
-                    branchpoints.append((y, x))
+    endpoint_sel = counts == 1
+    branch_sel = counts > 2
+    ep_y, ep_x = ys[endpoint_sel], xs[endpoint_sel]
+    br_y, br_x = ys[branch_sel], xs[branch_sel]
 
-    endpoint_count = len(endpoints)
-    branch_count = len(branchpoints)
-    y_indices, x_indices = np.where(skeleton_img)
-    if len(y_indices) > 0 and len(x_indices) > 0:
-        cy = np.mean(y_indices)
-        cx = np.mean(x_indices)
+    endpoint_count = int(endpoint_sel.sum())
+    branch_count = int(branch_sel.sum())
+
+    if ys.size > 0:
+        cy = np.mean(ys)
+        cx = np.mean(xs)
     else:
         cy, cx = 0, 0
 
-    top_left = sum(1 for y, x in endpoints if y < cy and x < cx)
-    top_right = sum(1 for y, x in endpoints if y < cy and x >= cx)
-    bottom_left = sum(1 for y, x in endpoints if y >= cy and x < cx)
-    bottom_right = sum(1 for y, x in endpoints if y >= cy and x >= cx)
+    top_left = int(np.count_nonzero((ep_y < cy) & (ep_x < cx)))
+    top_right = int(np.count_nonzero((ep_y < cy) & (ep_x >= cx)))
+    bottom_left = int(np.count_nonzero((ep_y >= cy) & (ep_x < cx)))
+    bottom_right = int(np.count_nonzero((ep_y >= cy) & (ep_x >= cx)))
 
-    branch_tl = sum(1 for y, x in branchpoints if y < cy and x < cx)
-    branch_tr = sum(1 for y, x in branchpoints if y < cy and x >= cx)
-    branch_bl = sum(1 for y, x in branchpoints if y >= cy and x < cx)
-    branch_br = sum(1 for y, x in branchpoints if y >= cy and x >= cx)
+    branch_tl = int(np.count_nonzero((br_y < cy) & (br_x < cx)))
+    branch_tr = int(np.count_nonzero((br_y < cy) & (br_x >= cx)))
+    branch_bl = int(np.count_nonzero((br_y >= cy) & (br_x < cx)))
+    branch_br = int(np.count_nonzero((br_y >= cy) & (br_x >= cx)))
 
-    pixel_count = np.sum(skeleton_img) // 255
+    pixel_count = int(ys.size)
     values = [
         endpoint_count,
         branch_count,
@@ -344,13 +354,10 @@ def stroke_direction_hash(image: np.ndarray) -> str:
 
     bins = 8
     bin_size = 360 // bins
-    direction_bins = np.zeros(bins, dtype=int)
 
-    for i in range(direction.shape[0]):
-        for j in range(direction.shape[1]):
-            if mask[i, j]:
-                bin_idx = int(direction[i, j] // bin_size) % bins
-                direction_bins[bin_idx] += 1
+    masked_directions = direction[mask]
+    bin_indices = (masked_directions // bin_size).astype(np.intp) % bins
+    direction_bins = np.bincount(bin_indices, minlength=bins).astype(int)
 
     total = np.sum(direction_bins)
     if total > 0:
@@ -395,64 +402,35 @@ def junction_hash(image: np.ndarray) -> str:
     thinned = thin(binary)
     skeleton_img = thinned.astype(np.uint8) * 255
 
-    def count_neighbors(img, y, x):
-        n_count = 0
-        neighbors_pos = []
-        for i in range(max(0, y - 1), min(img.shape[0], y + 2)):
-            for j in range(max(0, x - 1), min(img.shape[1], x + 2)):
-                if (i != y or j != x) and img[i, j]:
-                    n_count += 1
-                    neighbors_pos.append((i, j))
-        return n_count, neighbors_pos
+    neighbor_count = _neighbor_count(skeleton_img)
+    ys, xs = np.where(skeleton_img)
+    counts = neighbor_count[ys, xs]
 
-    endpoints = []  # 1 neighbor
-    continuation = []  # 2 neighbors
-    t_junctions = []  # 3 neighbors
-    x_junctions = []  # 4+ neighbors
-
-    for y in range(skeleton_img.shape[0]):
-        for x in range(skeleton_img.shape[1]):
-            if skeleton_img[y, x]:
-                n_count, _ = count_neighbors(skeleton_img, y, x)
-                if n_count == 1:
-                    endpoints.append((y, x))
-                elif n_count == 2:
-                    continuation.append((y, x))
-                elif n_count == 3:
-                    t_junctions.append((y, x))
-                elif n_count >= 4:
-                    x_junctions.append((y, x))
+    endpoint_sel = counts == 1  # 1 neighbor
+    continuation_sel = counts == 2  # 2 neighbors
+    t_sel = counts == 3  # 3 neighbors
+    x_sel = counts >= 4  # 4+ neighbors
 
     height, width = skeleton_img.shape
+    half_y, half_x = height // 2, width // 2
 
-    quadrants = [
-        [(0, 0), (height // 2, width // 2)],  # Top-left
-        [(0, width // 2), (height // 2, width)],  # Top-right
-        [(height // 2, 0), (height, width // 2)],  # Bottom-left
-        [(height // 2, width // 2), (height, width)],  # Bottom-right
-    ]
+    def quadrant_distribution(selection: np.ndarray) -> list:
+        """Count selected points per quadrant, ordered TL, TR, BL, BR."""
+        sel_y = ys[selection]
+        sel_x = xs[selection]
+        quadrant_idx = (sel_y >= half_y).astype(np.intp) * 2 + (
+            sel_x >= half_x
+        ).astype(np.intp)
+        return np.bincount(quadrant_idx, minlength=4).tolist()
 
-    endpoint_dist = [0, 0, 0, 0]
-    t_junction_dist = [0, 0, 0, 0]
-    x_junction_dist = [0, 0, 0, 0]
+    endpoint_dist = quadrant_distribution(endpoint_sel)
+    t_junction_dist = quadrant_distribution(t_sel)
+    x_junction_dist = quadrant_distribution(x_sel)
 
-    for i, ((y1, x1), (y2, x2)) in enumerate(quadrants):
-        for y, x in endpoints:
-            if y1 <= y < y2 and x1 <= x < x2:
-                endpoint_dist[i] += 1
-
-        for y, x in t_junctions:
-            if y1 <= y < y2 and x1 <= x < x2:
-                t_junction_dist[i] += 1
-
-        for y, x in x_junctions:
-            if y1 <= y < y2 and x1 <= x < x2:
-                x_junction_dist[i] += 1
-
-    total_endpoints = len(endpoints)
-    total_t_junctions = len(t_junctions)
-    total_x_junctions = len(x_junctions)
-    total_continuation = len(continuation)
+    total_endpoints = int(endpoint_sel.sum())
+    total_t_junctions = int(t_sel.sum())
+    total_x_junctions = int(x_sel.sum())
+    total_continuation = int(continuation_sel.sum())
 
     features = [
         min(15, total_endpoints),
