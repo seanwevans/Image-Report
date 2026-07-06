@@ -2,12 +2,10 @@
 
 """ir - Generate an XML report with metadata and features of an image."""
 
-import asyncio
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 import logging
 from pathlib import Path
 import sys
-import os
 from typing import List, Dict, Optional, Tuple, Set, Union
 import time
 
@@ -433,7 +431,7 @@ def process_single_image(
         return False
 
 
-async def process_batch_async(
+def process_batch(
     image_paths: List[Path],
     output_dir: Path,
     selected_hashes: Set[str],
@@ -443,7 +441,12 @@ async def process_batch_async(
     max_workers: Optional[int],
 ) -> Tuple[int, int]:
     """
-    Processes a batch of images concurrently using ProcessPoolExecutor.
+    Processes a batch of images concurrently using a ProcessPoolExecutor.
+
+    The pool itself bounds concurrency to ``max_workers``, so no additional
+    throttling is needed. When ``continue_on_error`` is False, processing stops
+    at the first failure and any not-yet-started tasks are cancelled so the pool
+    does not keep working after the stop.
 
     Returns:
         Tuple (success_count, failure_count).
@@ -456,43 +459,24 @@ async def process_batch_async(
 
     success_count = 0
     failure_count = 0
-    tasks: Dict[asyncio.Task, Path] = {}
+
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
-        loop = asyncio.get_running_loop()
-        max_concurrent = max_workers or (os.cpu_count() or 1)
-        semaphore = asyncio.Semaphore(max_concurrent)
+        future_to_path: Dict[Future, Path] = {
+            pool.submit(
+                process_single_image,
+                image_path,
+                output_dir / f"{image_path.stem}.ir.xml",
+                selected_hashes,
+                nms_threshold,
+                default_dpi,
+            ): image_path
+            for image_path in image_paths
+        }
 
-        async def run_image(image_path: Path) -> bool:
-            output_path = output_dir / f"{image_path.stem}.ir.xml"
-            async with semaphore:
-                return await loop.run_in_executor(
-                    pool,
-                    process_single_image,
-                    image_path,
-                    output_path,
-                    selected_hashes,
-                    nms_threshold,
-                    default_dpi,
-                )
-
-        for image_path in image_paths:
-            task = asyncio.create_task(run_image(image_path))
-            tasks[task] = image_path
-
-        for future in asyncio.as_completed(tasks):
-            image_path = tasks[future]
+        for future in as_completed(future_to_path):
+            image_path = future_to_path[future]
             try:
-                result_ok = await future
-                if result_ok:
-                    success_count += 1
-                else:
-                    failure_count += 1
-                    if not continue_on_error:
-                        logger.critical(
-                            "Stopping batch processing due to error (continue_on_error=False)."
-                        )
-                        break
-
+                result_ok = future.result()
             except Exception as exc:
                 failure_count += 1
                 logger.error(
@@ -501,11 +485,20 @@ async def process_batch_async(
                     exc,
                     exc_info=False,
                 )
-                if not continue_on_error:
-                    logger.critical(
-                        "Stopping batch processing due to unhandled exception (continue_on_error=False)."
-                    )
-                    break
+                result_ok = False
+            else:
+                if result_ok:
+                    success_count += 1
+                else:
+                    failure_count += 1
+
+            if not result_ok and not continue_on_error:
+                logger.critical(
+                    "Stopping batch processing due to error (continue_on_error=False)."
+                )
+                for pending in future_to_path:
+                    pending.cancel()
+                break
 
     logger.info(
         "Batch processing finished. Success: %d, Failed: %d",
@@ -561,16 +554,14 @@ def main(cli_args: List[str]) -> int:
 
             logger.info("Found %d images.", len(image_paths))
 
-            processed_count, failed_count = asyncio.run(
-                process_batch_async(
-                    image_paths=image_paths,
-                    output_dir=output_dir,
-                    selected_hashes=selected_hashes,
-                    nms_threshold=params.nms_threshold,
-                    default_dpi=params.default_dpi,
-                    continue_on_error=params.continue_on_error,
-                    max_workers=params.max_workers,
-                )
+            processed_count, failed_count = process_batch(
+                image_paths=image_paths,
+                output_dir=output_dir,
+                selected_hashes=selected_hashes,
+                nms_threshold=params.nms_threshold,
+                default_dpi=params.default_dpi,
+                continue_on_error=params.continue_on_error,
+                max_workers=params.max_workers,
             )
 
         elif params.input_path.is_file():
