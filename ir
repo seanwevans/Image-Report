@@ -21,6 +21,7 @@ from utils import (
     setup_logging,
     parse_args,
     create_element,
+    rle_encode,
 )
 from hashing_config import (
     get_selected_hashes,
@@ -273,30 +274,28 @@ def _add_spectral_analysis(parent: etree._Element, image: np.ndarray) -> None:
 
     if counts:
         counts_elem = create_element(
-            analysis_parent, "spectral_analysis", attrib={"unit": "black_pixel_count"}
+            analysis_parent,
+            "spectral_analysis",
+            attrib={
+                "unit": "black_pixel_count",
+                "encoding": "rle",
+                "rle_format": "space-separated value:run tokens",
+            },
         )
 
-        horiz_elem = create_element(
+        create_element(
             counts_elem,
             "horizontal_projection",
+            text=rle_encode(counts["horizontal"]),
             attrib={"length": str(len(counts["horizontal"]))},
         )
-        for i, count in enumerate(counts["horizontal"]):
-            if count > 0:
-                create_element(
-                    horiz_elem, "row", text=str(count), attrib={"index": str(i)}
-                )
 
-        vert_elem = create_element(
+        create_element(
             counts_elem,
             "vertical_projection",
+            text=rle_encode(counts["vertical"]),
             attrib={"length": str(len(counts["vertical"]))},
         )
-        for i, count in enumerate(counts["vertical"]):
-            if count > 0:
-                create_element(
-                    vert_elem, "column", text=str(count), attrib={"index": str(i)}
-                )
     else:
         create_element(
             analysis_parent,
