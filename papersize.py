@@ -126,6 +126,29 @@ def guess_paper_size(pixel_width: int, pixel_height: int, dpi: int) -> Dict[str,
     return dict(sorted_guesses)
 
 
+def paper_size_confidence(paper_type: str, difference_score: float) -> float:
+    """
+    Converts a paper-size difference score into a [0.0, 1.0] confidence.
+
+    ``difference_score`` (as returned by :func:`guess_paper_size`) is the sum of
+    the absolute width and height differences measured in millimetres. To turn
+    it into a scale-free confidence we normalise by the candidate paper's own
+    size (width + height, in mm): a perfect match scores 1.0 and the confidence
+    decays as the mismatch grows relative to the paper's dimensions.
+
+    Returns 0.0 for unknown paper types or degenerate sizes.
+    """
+    standard_size = STANDARD_SIZES_MM.get(paper_type)
+    if standard_size is None:
+        return 0.0
+
+    denominator = standard_size.width_mm + standard_size.height_mm
+    if denominator <= 0:
+        return 0.0
+
+    return max(0.0, 1.0 - difference_score / denominator)
+
+
 def guess_dpi(
     paper_type: str, pixel_width: int, pixel_height: int
 ) -> Tuple[Optional[float], Optional[float]]:

@@ -32,7 +32,13 @@ from hashing_config import (
     CUSTOM_HASH_FUNCTIONS_COLOR,
     ALL_HASHES,
 )
-from papersize import STANDARD_SIZES_MM, guess_paper_size, guess_dpi, MM_PER_INCH
+from papersize import (
+    STANDARD_SIZES_MM,
+    guess_paper_size,
+    guess_dpi,
+    MM_PER_INCH,
+    paper_size_confidence,
+)
 from analysis import find_bounding_boxes, calculate_spectral_analysis
 
 logger = logging.getLogger(__name__)
@@ -65,7 +71,7 @@ def _add_metadata(
     if guesses:
         best_guess_name = next(iter(guesses))
         best_guess_diff = guesses[best_guess_name]
-        confidence = max(0.0, 1.0 - best_guess_diff / (width + height))
+        confidence = paper_size_confidence(best_guess_name, best_guess_diff)
 
         create_element(
             size_elem,
@@ -79,7 +85,7 @@ def _add_metadata(
 
         candidates_elem = create_element(size_elem, "candidates")
         for i, (name, diff) in enumerate(list(guesses.items())[:3]):
-            cand_conf = max(0.0, 1.0 - diff / (width + height))
+            cand_conf = paper_size_confidence(name, diff)
             create_element(
                 candidates_elem,
                 "match",
