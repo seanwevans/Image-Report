@@ -548,10 +548,15 @@ def main(cli_args: List[str]) -> int:
             output_dir = params.output_path
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            image_paths = []
+            # Deduplicate by resolved path: on case-insensitive filesystems
+            # (macOS, Windows) the lower- and upper-case globs both match the
+            # same file, which would otherwise be processed twice.
+            unique_paths: Dict[Path, Path] = {}
             for fmt in SUPPORTED_IMAGE_FORMATS:
-                image_paths.extend(params.input_path.glob(f"*.{fmt}"))
-                image_paths.extend(params.input_path.glob(f"*.{fmt.upper()}"))
+                for pattern in (f"*.{fmt}", f"*.{fmt.upper()}"):
+                    for path in params.input_path.glob(pattern):
+                        unique_paths.setdefault(path.resolve(), path)
+            image_paths = sorted(unique_paths.values())
 
             if not image_paths:
                 logger.warning(
