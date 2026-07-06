@@ -226,6 +226,47 @@ def create_element(
     return elem
 
 
+def rle_encode(values: List[int]) -> str:
+    """
+    Run-length encode a sequence of integers.
+
+    Returns a space-separated string of ``value:run`` tokens, e.g.
+    ``[0, 0, 0, 5, 5, 2]`` -> ``"0:3 5:2 2:1"``. This losslessly represents a
+    projection profile (including its zero runs) in a couple of short strings
+    instead of one XML element per entry. Returns an empty string for an empty
+    input.
+    """
+    if not values:
+        return ""
+
+    tokens: List[str] = []
+    prev = values[0]
+    run = 1
+    for value in values[1:]:
+        if value == prev:
+            run += 1
+        else:
+            tokens.append(f"{prev}:{run}")
+            prev = value
+            run = 1
+    tokens.append(f"{prev}:{run}")
+    return " ".join(tokens)
+
+
+def rle_decode(encoded: str) -> List[int]:
+    """
+    Decode a string produced by :func:`rle_encode` back into a list of ints.
+
+    Inverse of :func:`rle_encode`; an empty (or whitespace-only) string decodes
+    to an empty list.
+    """
+    values: List[int] = []
+    for token in encoded.split():
+        value_str, _, run_str = token.partition(":")
+        values.extend([int(value_str)] * int(run_str))
+    return values
+
+
 def non_max_suppression(boxes: np.ndarray, overlap_thresh: float) -> np.ndarray:
     """
     Condenses overlapping bounding boxes based on overlap threshold (IoU).
