@@ -156,8 +156,8 @@ def fourier_hash(image: np.ndarray) -> str:
             [format(v, "02x") for v in magnitude_spectrum_uint8.flatten()[:32]]
         )
         return hash_value.ljust(32, "0")
-    except Exception as e:
-        return f"fourier_error"
+    except Exception:
+        return "fourier_error"
 
 
 def skeleton_hash(image: np.ndarray) -> str:
