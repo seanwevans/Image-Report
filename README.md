@@ -178,20 +178,3 @@ The tool generates XML reports with the following structure:
   </analysis>
 </image_report>
 ```
-
-## Project Structure
-
-- `ir` - Main executable script
-- `utils.py` - Utility functions for logging, argument parsing, and XML creation
-- `analysis.py` - Image analysis functions (bounding boxes, spectral analysis)
-- `hashing_config.py` - Configuration for image hashing functions
-- `papersize.py` - Paper size definitions and guessing logic
-- `requirements.txt` - Package dependencies
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
